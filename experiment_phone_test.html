@@ -3,13 +3,14 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>Swipe Study – Active Only (Single-Trial, Mobile)</title>
+    <title>Swipe Study – Active / Passive (Mobile, Single-Trial)</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 
     <!-- jsPsych v6 -->
     <script src="https://unpkg.com/jspsych@6.3.1/jspsych.js"></script>
     <link href="https://unpkg.com/jspsych@6.3.1/css/jspsych.css" rel="stylesheet" />
     <script src="https://unpkg.com/jspsych@6.3.1/plugins/jspsych-html-keyboard-response.js"></script>
+    <script src="https://unpkg.com/jspsych@6.3.1/plugins/jspsych-preload.js"></script>
 
     <style>
         html,
@@ -33,19 +34,20 @@
             position: relative;
             width: 100vw;
             height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
             background-color: #000;
-            flex-direction: column;
-            box-sizing: border-box;
-            padding: 10px;
+            overflow: hidden;
         }
 
+        /* 真·全屏视频 */
         video {
-            max-width: 100%;
-            max-height: 80%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
             background-color: #000;
+            object-fit: contain;
+            /* 或 cover，更接近 TikTok，但可能裁边 */
         }
 
         .center-text {
@@ -64,7 +66,16 @@
     <div id="jspsych-target"></div>
 
     <script>
-        /************* 视频序列（先用 5 条 demo） *************/
+        /************* 工具：读取 URL 参数 *************/
+        function getUrlParam(name, def) {
+            var url = new URL(window.location.href);
+            return url.searchParams.get(name) || def;
+        }
+
+        var CONDITION = getUrlParam('cond', 'active');  // 'active' | 'ps' | 'pn'
+        var TRACE_ID = getUrlParam('trace', '1');      // yoke trace id，给 ps / pn 用
+
+        /************* 视频序列 *************/
         var VIDEO_SEQUENCE = [
             'video1.mp4',
             'video2.mp4',
@@ -73,6 +84,20 @@
             'video5.mp4'
         ];
         var N_VIDEOS = VIDEO_SEQUENCE.length;
+
+        /************* Yoke traces：示例，之后请用 active dwellTimes 来替换 *************/
+        var YOKED_TRACES = {
+            "1": [3000, 4500, 4000, 3500, 5000]  // 单位：ms
+            // 后续可以添加 "2": [...], "3": [...] 等
+        };
+
+        var yokedDurations = null;
+        if (CONDITION === 'ps' || CONDITION === 'pn') {
+            yokedDurations = YOKED_TRACES[TRACE_ID];
+            if (!yokedDurations || yokedDurations.length !== N_VIDEOS) {
+                alert('YOKED_TRACES[' + TRACE_ID + '] 未正确设置或长度不是 ' + N_VIDEOS);
+            }
+        }
 
         /************* Swipe 检测工具：向上滑 *************/
         function installSwipeUpHandler(callback, threshold) {
@@ -107,14 +132,26 @@
         /************* 初始化 timeline *************/
         var timeline = [];
 
-        /************* 第 0 页：点击开始（不放视频，只是让参与者准备好） *************/
+        /************* 新增：预加载所有视频（带进度条） *************/
+        var preload_trial = {
+            type: 'preload',
+            video: VIDEO_SEQUENCE,               // 这里将来换成你60条视频的数组
+            show_progress_bar: true,
+            message: '视频正在加载，请稍候……',
+            error_message: '部分视频加载失败，但实验仍将继续。',
+            continue_after_error: true,          // 万一某条加载失败，不整个卡死
+            max_load_time: 60000                // 最长等 60 秒（10 分钟），可按需要调整
+        };
+        timeline.push(preload_trial);
+
+        /************* 第 0 页：点击开始 *************/
         var unlock_trial = {
             type: 'html-keyboard-response',
             stimulus: `
       <div style="height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;color:white;padding:20px;box-sizing:border-box;">
         <p style="font-size:22px;text-align:center;margin-bottom:20px;">
           接下来你将观看一系列短视频。<br><br>
-          你可以在任何时候 <b>向上滑动（swipe up）</b> 切换到下一条视频。
+          当前条件：<b>${CONDITION.toUpperCase()}</b>${(CONDITION !== 'active') ? ('，trace=' + TRACE_ID) : ''}
         </p>
         <p style="font-size:16px;text-align:center;margin-top:10px;">
           请轻触屏幕任意位置开始。
@@ -132,13 +169,11 @@
         };
         timeline.push(unlock_trial);
 
-        /************* 核心：单一 trial 里播放整条视频流（ACTIVE SWIPE） *************/
+        /************* ACTIVE：单 trial 播整条视频流（上滑切 + 播完自动切） *************/
         var active_swipe_trial = {
             type: 'html-keyboard-response',
             stimulus: `
       <div class="video-container" id="container-main">
-
-        <!-- 初始：黑屏 + 上箭头，引导第一次上滑 -->
         <div id="start-screen"
              style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;">
           <div class="arrow">↑</div>
@@ -150,13 +185,10 @@
             如果你什么都不做，视频播放结束后也会自动切换。
           </p>
         </div>
-
-        <!-- 主视频元素：一开始隐藏，收到第一次 swipe 后开始使用 -->
         <video id="main-video"
                src=""
                playsinline
                style="display:none;"></video>
-
       </div>
     `,
             choices: jsPsych.NO_KEYS,
@@ -165,23 +197,21 @@
                 var startScreen = document.getElementById('start-screen');
                 var video = document.getElementById('main-video');
 
-                var currentIndex = -1;      // 当前视频索引（-1 表示还在 start-screen）
-                var currentStartTime = null;    // 当前这条视频开始时间
-                var dwellTimes = [];      // 每条视频的停留时长（ms）
-                var endTypes = [];      // 每条视频结束方式：'swipe' 或 'auto'
-                var swipeRemover = null;    // 用于清理 swipe 监听
-                var inTransition = false;   // 防止重复触发下一条
+                var currentIndex = -1;
+                var currentStartTime = null;
+                var dwellTimes = [];
+                var endTypes = [];
+                var swipeRemover = null;
+                var inTransition = false;
 
-                // 保证视频默认允许有声播放（具体是否有声由浏览器策略决定）
                 video.muted = false;
                 video.volume = 1.0;
 
-                // 封装：开始播放第 i 条视频
                 function startVideo(i) {
                     if (i < 0 || i >= N_VIDEOS) return;
                     currentIndex = i;
                     currentStartTime = performance.now();
-                    inTransition = false;   // 进入新视频，重置过渡标志
+                    inTransition = false;
 
                     video.src = VIDEO_SEQUENCE[i];
                     video.style.display = 'block';
@@ -190,48 +220,41 @@
                     var p = video.play();
                     if (p && p.catch) {
                         p.catch(function (err) {
-                            console.log('play() 被拦截 (video index ' + i + '):', err);
+                            console.log('play() 被拦截 (active, index ' + i + '):', err);
                         });
                     }
                 }
 
-                // 封装：进入下一条视频，trigger = 'swipe' 或 'auto'
                 function goToNextVideo(trigger) {
-                    // 防止同一条被重复触发（比如刚结束又滑了一次）
                     if (inTransition) return;
                     inTransition = true;
 
-                    // 情况 1：还在 start-screen（第一个 swipe）
                     if (currentIndex === -1) {
+                        // 从 start-screen 进入第一个视频
                         startScreen.style.display = 'none';
                         startVideo(0);
                         return;
                     }
 
-                    // 情况 2：正在看某条视频
                     var now = performance.now();
                     var dwell = now - currentStartTime;
                     dwellTimes.push(dwell);
-                    endTypes.push(trigger);  // 记录是 swipe 结束还是自动播放结束
+                    endTypes.push(trigger);
 
-                    // 停掉当前视频
                     try { video.pause(); } catch (e) { }
 
                     if (currentIndex < N_VIDEOS - 1) {
-                        // 还有下一条 -> 直接切下一条并播放
                         startVideo(currentIndex + 1);
                     } else {
-                        // 已经是最后一条 -> 结束整个 trial
                         if (swipeRemover) swipeRemover();
 
-                        // 把每条视频的 dwell 写入 data（逐条写，方便之后分析）
                         for (var k = 0; k < dwellTimes.length; k++) {
                             jsPsych.data.write({
                                 condition: 'active',
                                 video_index: k,
                                 video_file: VIDEO_SEQUENCE[k],
                                 dwell_ms: dwellTimes[k],
-                                end_type: endTypes[k]   // 'swipe' 或 'auto'
+                                end_type: endTypes[k]
                             });
                         }
 
@@ -245,33 +268,352 @@
                     }
                 }
 
-                // 1）向上滑动 -> 进入下一条（或从 start-screen 进入第一个视频）
+                // 上滑 -> 下一条
                 swipeRemover = installSwipeUpHandler(function () {
                     goToNextVideo('swipe');
                 }, 50);
 
-                // 2）视频自然播放结束 -> 自动切到下一条
+                // 播放结束 -> 自动切
                 video.onended = function () {
-                    // 如果参与者在 very last moment 刚好滑了一下，也没关系，goToNextVideo 里有 inTransition 防抖
                     goToNextVideo('auto');
                 };
             },
             on_finish: function () {
-                // 兜底：清空全局的 touch 监听（installSwipeUpHandler 里已经有清理，这里多一层保险）
                 document.ontouchstart = null;
                 document.ontouchend = null;
             }
         };
 
-        timeline.push(active_swipe_trial);
+        /************* PASSIVE SWIPE：Tₐ 停止 → 黑屏提示上滑 *************/
+        var passive_swipe_trial = {
+            type: 'html-keyboard-response',
+            stimulus: `
+      <div class="video-container" id="container-main">
+        <div id="start-screen"
+             style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;">
+          <div class="arrow">↑</div>
+          <p class="center-text" style="font-size:22px;">
+            现在请 <b>向上滑动（swipe up）</b> 开始观看第一个视频。
+          </p>
+          <p class="center-text" style="font-size:14px;opacity:0.7;margin-top:20px;">
+            请专注观看视频。每条视频会在适当时间自动停止，<br>
+            屏幕变黑并出现箭头，这时请向上滑动进入下一条。
+          </p>
+        </div>
+
+        <!-- 主视频 -->
+        <video id="main-video"
+               src=""
+               playsinline
+               style="display:none;"></video>
+
+        <!-- 动作提示黑屏：视频在 Tₐ 停止后才会显示 -->
+        <div id="action-screen"
+             style="display:none;position:absolute;top:0;left:0;width:100%;height:100%;
+                    background:#000;flex-direction:column;justify-content:center;align-items:center;">
+          <div class="arrow">↑</div>
+          <p class="center-text" style="font-size:22px;">
+            请现在 <b>向上滑动（swipe up）</b> 进入下一个视频
+          </p>
+        </div>
+      </div>
+    `,
+            choices: jsPsych.NO_KEYS,
+            on_load: function () {
+                var container = document.getElementById('container-main');
+                var startScreen = document.getElementById('start-screen');
+                var video = document.getElementById('main-video');
+                var actionScreen = document.getElementById('action-screen');
+
+                var currentIndex = -1;
+                var currentStartTime = null;
+                var dwellTimes = [];
+                var viewTimes = []; // view 阶段（Tₐ）的时长
+                var actionRTs = []; // 从 Tₐ 到 swipe 的时间
+                var swipeRemover = null;
+                var inTransition = false;
+                var phase = 'start';  // 'start' | 'view' | 'action'
+                var actionStartTime = null;
+                var tTimeoutId = null;     // Tₐ 定时器
+
+                video.muted = false;
+                video.volume = 1.0;
+
+                function startVideo(i) {
+                    if (i < 0 || i >= N_VIDEOS) return;
+                    currentIndex = i;
+                    currentStartTime = performance.now();
+                    phase = 'view';
+                    inTransition = false;
+                    actionStartTime = null;
+
+                    video.src = VIDEO_SEQUENCE[i];
+                    video.style.display = 'block';
+                    video.currentTime = 0;
+                    actionScreen.style.display = 'none';
+
+                    var targetDwell = yokedDurations[i]; // Tₐ
+
+                    var p = video.play();
+                    if (p && p.catch) {
+                        p.catch(function (err) {
+                            console.log('play() 被拦截 (ps, index ' + i + '):', err);
+                        });
+                    }
+
+                    // 在 Tₐ 时刻自动停止视频 + 切到黑屏提示
+                    if (tTimeoutId) clearTimeout(tTimeoutId);
+                    tTimeoutId = setTimeout(function () {
+                        phase = 'action';
+                        actionStartTime = performance.now();
+
+                        try { video.pause(); } catch (e) { }
+                        video.style.display = 'none';
+                        actionScreen.style.display = 'flex';
+                    }, targetDwell);
+                }
+
+                function goToNextVideoFromAction() {
+                    if (inTransition) return;
+                    if (phase !== 'action') return; // 只有黑屏阶段才响应上滑
+
+                    inTransition = true;
+
+                    var now = performance.now();
+                    var totalDwell = now - currentStartTime;
+                    var viewDwell = yokedDurations[currentIndex];
+                    var actionRT = actionStartTime ? (now - actionStartTime) : null;
+
+                    dwellTimes.push(totalDwell);
+                    viewTimes.push(viewDwell);
+                    actionRTs.push(actionRT);
+
+                    if (tTimeoutId) {
+                        clearTimeout(tTimeoutId);
+                        tTimeoutId = null;
+                    }
+
+                    if (currentIndex < N_VIDEOS - 1) {
+                        startVideo(currentIndex + 1);
+                    } else {
+                        if (swipeRemover) swipeRemover();
+
+                        for (var k = 0; k < dwellTimes.length; k++) {
+                            jsPsych.data.write({
+                                condition: 'passive_swipe',
+                                trace_id: TRACE_ID,
+                                video_index: k,
+                                video_file: VIDEO_SEQUENCE[k],
+                                target_dwell_ms: yokedDurations[k],
+                                total_dwell_ms: dwellTimes[k],
+                                view_dwell_ms: viewTimes[k],
+                                action_rt_ms: actionRTs[k]
+                            });
+                        }
+
+                        jsPsych.finishTrial({
+                            condition: 'passive_swipe',
+                            trace_id: TRACE_ID,
+                            n_videos: N_VIDEOS,
+                            dwell_times_ms: dwellTimes,
+                            view_times_ms: viewTimes,
+                            action_rts_ms: actionRTs,
+                            video_sequence_used: VIDEO_SEQUENCE
+                        });
+                    }
+                }
+
+                // 上滑：start-screen -> 第一个视频；黑屏下 -> 进入下一条
+                swipeRemover = installSwipeUpHandler(function () {
+                    if (currentIndex === -1) {
+                        // 从 start-screen 进入第一个视频
+                        startScreen.style.display = 'none';
+                        startVideo(0);
+                    } else {
+                        // 只有处于 action 阶段（黑屏提示）时才响应
+                        if (phase === 'action') {
+                            goToNextVideoFromAction();
+                        }
+                    }
+                }, 50);
+
+                // 在 ps 条件下，不在 onended 做任何事（逻辑由 Tₐ 定时器控制）
+                video.onended = function () {
+                    // 可以留空，或者 log 一下
+                    console.log('Video ended before Tₐ in ps, index:', currentIndex);
+                };
+            },
+            on_finish: function () {
+                document.ontouchstart = null;
+                document.ontouchend = null;
+            }
+        };
+
+        /************* PASSIVE NON-SWIPE：严格被动，按 Tₐ 自动切换，不响应上滑 *************/
+        var passive_non_swipe_trial = {
+            type: 'html-keyboard-response',
+            stimulus: `
+      <div class="video-container" id="container-main">
+        <div id="start-screen"
+             style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;">
+          <p class="center-text" style="font-size:22px;">
+            接下来你将<b>被动观看</b>一系列视频。<br>
+            请不要滑动或点击，视频会自动切换。
+          </p>
+        </div>
+        <video id="main-video"
+               src=""
+               playsinline
+               style="display:none;"></video>
+      </div>
+    `,
+            choices: jsPsych.NO_KEYS,
+            on_load: function () {
+                var container = document.getElementById('container-main');
+                var startScreen = document.getElementById('start-screen');
+                var video = document.getElementById('main-video');
+
+                var currentIndex = -1;
+                var currentStartTime = null;
+                var dwellTimes = [];
+                var tTimeoutId = null;
+
+                video.muted = false;
+                video.volume = 1.0;
+
+                function startVideo(i) {
+                    if (i < 0 || i >= N_VIDEOS) return;
+                    currentIndex = i;
+                    currentStartTime = performance.now();
+
+                    video.src = VIDEO_SEQUENCE[i];
+                    video.style.display = 'block';
+                    video.currentTime = 0;
+
+                    var p = video.play();
+                    if (p && p.catch) {
+                        p.catch(function (err) {
+                            console.log('play() 被拦截 (pn, index ' + i + '):', err);
+                        });
+                    }
+
+                    var targetDwell = yokedDurations[i];
+
+                    if (tTimeoutId) clearTimeout(tTimeoutId);
+                    tTimeoutId = setTimeout(function () {
+                        goToNextVideoAuto();
+                    }, targetDwell);
+                }
+
+                function goToNextVideoAuto() {
+                    var now = performance.now();
+                    var dwell = now - currentStartTime;
+                    dwellTimes.push(dwell);
+
+                    try { video.pause(); } catch (e) { }
+
+                    if (currentIndex < N_VIDEOS - 1) {
+                        startVideo(currentIndex + 1);
+                    } else {
+                        if (tTimeoutId) {
+                            clearTimeout(tTimeoutId);
+                            tTimeoutId = null;
+                        }
+
+                        for (var k = 0; k < dwellTimes.length; k++) {
+                            jsPsych.data.write({
+                                condition: 'passive_non_swipe',
+                                trace_id: TRACE_ID,
+                                video_index: k,
+                                video_file: VIDEO_SEQUENCE[k],
+                                target_dwell_ms: yokedDurations[k],
+                                dwell_ms: dwellTimes[k]
+                            });
+                        }
+
+                        jsPsych.finishTrial({
+                            condition: 'passive_non_swipe',
+                            trace_id: TRACE_ID,
+                            n_videos: N_VIDEOS,
+                            dwell_times_ms: dwellTimes,
+                            video_sequence_used: VIDEO_SEQUENCE
+                        });
+                    }
+                }
+
+                // 不安装 swipe handler，完全忽略上滑
+                // 只在 start-screen 后自动开始
+                setTimeout(function () {
+                    startScreen.style.display = 'none';
+                    startVideo(0);
+                }, 1000); // 1 秒后开始，也可以改成点击触发
+
+                video.onended = function () {
+                    // 理论上不会依赖 onended，而是用 Tₐ；这里可以仅做日志
+                    console.log('Video ended before Tₐ in pn, index:', currentIndex);
+                };
+            },
+            on_finish: function () {
+                document.ontouchstart = null;
+                document.ontouchend = null;
+            }
+        };
+
+        /************* 根据 CONDITION 选择对应的 trial *************/
+        if (CONDITION === 'active') {
+            timeline.push(active_swipe_trial);
+        } else if (CONDITION === 'ps') {
+            timeline.push(passive_swipe_trial);
+        } else if (CONDITION === 'pn') {
+            timeline.push(passive_non_swipe_trial);
+        } else {
+            alert('未知条件 cond=' + CONDITION);
+        }
+
+        /************* 结束页 *************/
+        var end_trial = {
+            type: 'html-keyboard-response',
+            stimulus: `
+    <div class="video-container">
+      <div style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;">
+        <p class="center-text" style="font-size:24px;">
+          所有视频播放完毕。<br><br>
+          感谢你的参与！
+        </p>
+        <p class="center-text" style="font-size:14px;opacity:0.8;margin-top:10px;">
+          如需下载本次测试的数据，请点击下面的按钮。
+        </p>
+        <button id="download-btn"
+                style="margin-top:20px;padding:10px 20px;font-size:16px;border-radius:8px;border:none;cursor:pointer;">
+          下载数据（CSV）
+        </button>
+        <p class="center-text" style="font-size:12px;opacity:0.6;margin-top:15px;">
+          下载完成后，你可以关闭本页面。
+        </p>
+      </div>
+    </div>
+  `,
+            choices: jsPsych.NO_KEYS,
+            on_load: function () {
+                var btn = document.getElementById('download-btn');
+                btn.addEventListener('click', function () {
+                    // 在“真实的用户点击”里触发下载，浏览器一般不会拦截
+                    jsPsych.data.get().localSave(
+                        'csv',
+                        'swipe_' + CONDITION + '_trace' + TRACE_ID + '.csv'
+                    );
+                });
+            }
+        };
+        timeline.push(end_trial);
+
 
         /************* 启动 jsPsych *************/
         jsPsych.init({
             display_element: 'jspsych-target',
             timeline: timeline,
             on_finish: function () {
-                // 开发阶段：本地保存；正式实验时换成上传到服务器
-                jsPsych.data.get().localSave('csv', 'swipe_active_singletrial_mobile.csv');
+                jsPsych.data.get().localSave('csv', 'swipe_' + CONDITION + '_trace' + TRACE_ID + '.csv');
             }
         });
     </script>
