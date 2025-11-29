@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Swipe Study – 5 Videos, Keyboard, 3 Conditions (jsPsych 6)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- jsPsych v6 -->
+  <script src="https://unpkg.com/jspsych@6.3.1/jspsych.js"></script>
+  <link href="https://unpkg.com/jspsych@6.3.1/css/jspsych.css" rel="stylesheet" />
+  <script src="https://unpkg.com/jspsych@6.3.1/plugins/jspsych-html-keyboard-response.js"></script>
+
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #000;
+      color: #fff;
+    }
+    .video-container {
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background-color: #000;
+      flex-direction: column;
+    }
+    video {
+      max-width: 100%;
+      max-height: 80%;
+    }
+  </style>
+</head>
+<body>
+
+<div id="jspsych-target"></div>
+
+<script>
+  /************* 工具：读取 URL 参数 *************/
+  function getUrlParam(name, def) {
+    var url = new URL(window.location.href);
+    return url.searchParams.get(name) || def;
+  }
+
+  // 条件: active / ps / pn
+  var CONDITION = getUrlParam('cond', 'active');   // 'active' | 'ps' | 'pn'
+  var TRACE_ID  = getUrlParam('trace', '1');       // yoke trace id
+
+  /************* 视频序列 & yoke traces *************/
+  var VIDEO_SEQUENCE = [
+    'video1.mp4',
+    'video2.mp4',
+    'video3.mp4',
+    'video4.mp4',
+    'video5.mp4'
+  ];
+  var N_VIDEOS = VIDEO_SEQUENCE.length;
+
+  // 示例 yoke：5 个视频的目标停留时间（毫秒）
+  var YOKED_TRACES = {
+    "1": [3000, 4500, 4000, 3500, 5000]
+    // 之后你可以加 "2": [...], "3": [...] 等
+  };
+
+  var yokedDurations = null;
+  if (CONDITION === 'ps' || CONDITION === 'pn') {
+    yokedDurations = YOKED_TRACES[TRACE_ID];
+    if (!yokedDurations || yokedDurations.length !== N_VIDEOS) {
+      alert('YOKED_TRACES[' + TRACE_ID + '] 未正确设置或长度不是 ' + N_VIDEOS);
+    }
+  }
+
+  /************* 初始化 timeline *************/
+  var timeline = [];
+
+  /************* 第 0 页：按 Enter 解锁声音 + 说明键位 *************/
+  var unlock_trial = {
+    type: 'html-keyboard-response',
+    stimulus: `
+      <div style="height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;color:white;">
+        <p style="font-size:22px;text-align:center;">
+          接下来你将观看一系列短视频。<br><br>
+          为了让后续视频可以自动播放并带有声音，<br>
+          请按下回车键（Enter）开始。
+        </p>
+        <p style="font-size:16px;margin-top:20px;">
+          Throughout the task:<br>
+          &bull; 在 ACTIVE 或 PASSIVE SWIPE 条件下，请按 <b>空格键（Space）</b> 切换。<br>
+          &bull; 在 PASSIVE NON-SWIPE 条件下，视频会自动切换。
+        </p>
+        <p style="font-size:14px;margin-top:10px;">
+          当前条件：${CONDITION.toUpperCase()}${(CONDITION !== 'active') ? ('，trace=' + TRACE_ID) : '' }
+        </p>
+      </div>
+    `,
+    choices: jsPsych.NO_KEYS,
+    on_load: function() {
+      function handler(e) {
+        if (e.code === 'Enter' || e.keyCode === 13) {
+          e.preventDefault();
+          document.removeEventListener('keydown', handler);
+          setTimeout(function() {
+            jsPsych.finishTrial();
+          }, 0);
+        }
+      }
+      document.addEventListener('keydown', handler);
+    }
+  };
+  timeline.push(unlock_trial);
+
+  /************* 工具：添加 Space 监听（当前 trial 用一次） *************/
+  function addSpaceListener(finishCallback) {
+    function handler(e) {
+      if (e.code === 'Space' || e.keyCode === 32) {
+        e.preventDefault();
+        document.removeEventListener('keyup', handler);
+        setTimeout(function () {
+          finishCallback();
+        }, 0);
+      }
+    }
+    document.addEventListener('keyup', handler);
+  }
+
+  /************* ACTIVE 条件：自由按 Space 切换 *************/
+  function makeActiveVideoTrial(index, videoFile) {
+    return {
+      type: 'html-keyboard-response',
+      stimulus: `
+        <div class="video-container">
+          <p style="text-align:center;margin-bottom:10px;">
+            条件：ACTIVE（主动）<br>
+            当前视频：${videoFile}<br>
+            当你想切换到下一个视频时，请按空格键（Space）。
+          </p>
+          <video id="video-${index}" src="${videoFile}" controls playsinline></video>
+        </div>
+      `,
+      choices: jsPsych.NO_KEYS,
+      on_load: function() {
+        var v = document.getElementById('video-' + index);
+        v.muted = false;
+        v.volume = 1.0;
+
+        var trialStart = performance.now();
+        var p = v.play();
+        if (p !== undefined) {
+          p.catch(function(err){
+            console.log(videoFile + ' play() 被拦截：', err);
+          });
+        }
+
+        addSpaceListener(function() {
+          var dwell = performance.now() - trialStart;
+          jsPsych.finishTrial({
+            condition: 'active',
+            video_index: index,
+            video_file: videoFile,
+            ended_by: 'space',
+            dwell_ms: dwell
+          });
+        });
+      }
+    };
+  }
+
+  /************* PASSIVE SWIPE 条件：红点前 Space 无效，红点后 Space 切换 *************/
+  function makePassiveSwipeVideoTrial(index, videoFile, yokedDurations) {
+    var targetDwell = yokedDurations[index]; // ms
+
+    return {
+      type: 'html-keyboard-response',
+      stimulus: `
+        <div class="video-container">
+          <p style="text-align:center;margin-bottom:10px;">
+            条件：PASSIVE SWIPE（被动时间，主动按键）<br>
+            当前视频：${videoFile}<br>
+            请<b>等待红点出现</b>，红点出现后尽快按空格键（Space）切换到下一个视频。
+          </p>
+          <div id="cue-dot"
+               style="width:20px;height:20px;border-radius:10px;background-color:red;opacity:0;margin-bottom:8px;"></div>
+          <video id="video-${index}" src="${videoFile}" controls playsinline></video>
+        </div>
+      `,
+      choices: jsPsych.NO_KEYS,
+      on_load: function() {
+        var v = document.getElementById('video-' + index);
+        var cueDot = document.getElementById('cue-dot');
+
+        v.muted = false;
+        v.volume = 1.0;
+
+        var trialStart = performance.now();
+        var cueShown = false;
+        var cueTime = null;
+        var cueTimeout = null;
+
+        var p = v.play();
+        if (p !== undefined) {
+          p.catch(function(err){
+            console.log(videoFile + ' play() 被拦截：', err);
+          });
+        }
+
+        // 到达 yoke 时间点，显示红点
+        cueTimeout = setTimeout(function() {
+          cueDot.style.opacity = 1;
+          cueShown = true;
+          cueTime = performance.now();
+        }, targetDwell);
+
+        // 专门给 ps 条件写一个 Space 监听器：
+        function spaceHandler(e) {
+          if (e.code === 'Space' || e.keyCode === 32) {
+            e.preventDefault();
+            // 红点未出现前的 Space 一律忽略
+            if (!cueShown) {
+              return;
+            }
+
+            document.removeEventListener('keyup', spaceHandler);
+            if (cueTimeout) clearTimeout(cueTimeout);
+
+            var now = performance.now();
+            var dwell = now - trialStart;
+            var rt_from_cue = cueShown ? (now - cueTime) : null;
+
+            jsPsych.finishTrial({
+              condition: 'passive_swipe',
+              trace_id: TRACE_ID,
+              video_index: index,
+              video_file: videoFile,
+              target_dwell_ms: targetDwell,
+              ended_by: 'space',
+              dwell_ms: dwell,
+              rt_from_cue_ms: rt_from_cue,
+              cue_shown: cueShown
+            });
+          }
+        }
+
+        document.addEventListener('keyup', spaceHandler);
+      }
+    };
+  }
+
+  /************* PASSIVE NON-SWIPE 条件：严格被动，自动切换 *************/
+  function makePassiveNonSwipeVideoTrial(index, videoFile, yokedDurations) {
+    var targetDwell = yokedDurations[index]; // ms
+
+    return {
+      type: 'html-keyboard-response',
+      stimulus: `
+        <div class="video-container">
+          <p style="text-align:center;margin-bottom:10px;">
+            条件：PASSIVE NON-SWIPE（完全被动）<br>
+            当前视频：${videoFile}<br>
+            请<b>被动观看</b>，不要按任何键，视频会在适当时间自动切换。
+          </p>
+          <video id="video-${index}" src="${videoFile}" controls playsinline></video>
+        </div>
+      `,
+      choices: jsPsych.NO_KEYS,  // 按键不会结束 trial
+      on_load: function() {
+        var v = document.getElementById('video-' + index);
+        v.muted = false;
+        v.volume = 1.0;
+
+        var trialStart = performance.now();
+        var autoTimeout = null;
+
+        var p = v.play();
+        if (p !== undefined) {
+          p.catch(function(err){
+            console.log(videoFile + ' play() 被拦截：', err);
+          });
+        }
+
+        // 到目标时间自动结束 trial
+        autoTimeout = setTimeout(function() {
+          var dwell = performance.now() - trialStart;
+          jsPsych.finishTrial({
+            condition: 'passive_non_swipe',
+            trace_id: TRACE_ID,
+            video_index: index,
+            video_file: videoFile,
+            target_dwell_ms: targetDwell,
+            ended_by: 'auto',
+            dwell_ms: dwell
+          });
+        }, targetDwell);
+
+        // 如需调试可以暂时打开放 ESC 跳过（正式实验建议关掉）
+        /*
+        function debugSkip(e) {
+          if (e.code === 'Escape') {
+            clearTimeout(autoTimeout);
+            var dwell = performance.now() - trialStart;
+            document.removeEventListener('keydown', debugSkip);
+            jsPsych.finishTrial({
+              condition: 'passive_non_swipe',
+              trace_id: TRACE_ID,
+              video_index: index,
+              video_file: videoFile,
+              target_dwell_ms: targetDwell,
+              ended_by: 'debug_escape',
+              dwell_ms: dwell
+            });
+          }
+        }
+        document.addEventListener('keydown', debugSkip);
+        */
+      }
+    };
+  }
+
+  /************* 根据 CONDITION 构建 5 个视频 trial *************/
+  for (var i = 0; i < N_VIDEOS; i++) {
+    var file = VIDEO_SEQUENCE[i];
+
+    if (CONDITION === 'active') {
+      timeline.push(makeActiveVideoTrial(i, file));
+    } else if (CONDITION === 'ps') {
+      timeline.push(makePassiveSwipeVideoTrial(i, file, yokedDurations));
+    } else if (CONDITION === 'pn') {
+      timeline.push(makePassiveNonSwipeVideoTrial(i, file, yokedDurations));
+    }
+  }
+
+  /************* 结束页 *************/
+  var end_trial = {
+    type: 'html-keyboard-response',
+    stimulus: `
+      <p style="font-size:24px; text-align:center; margin-top:40vh;">
+        所有视频播放完毕。<br><br>
+        Press any key to finish.
+      </p>
+    `
+  };
+  timeline.push(end_trial);
+
+  /************* 启动 jsPsych *************/
+  jsPsych.init({
+    display_element: 'jspsych-target',
+    timeline: timeline,
+    on_finish: function() {
+      jsPsych.data.get().localSave('csv', 'swipe_5videos_' + CONDITION + '_trace' + TRACE_ID + '.csv');
+    }
+  });
+</script>
+
+</body>
+</html>
