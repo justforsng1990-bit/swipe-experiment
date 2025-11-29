@@ -9,6 +9,7 @@
   <script src="https://unpkg.com/jspsych@6.3.1/jspsych.js"></script>
   <link href="https://unpkg.com/jspsych@6.3.1/css/jspsych.css" rel="stylesheet" />
   <script src="https://unpkg.com/jspsych@6.3.1/plugins/jspsych-html-keyboard-response.js"></script>
+  <script src="https://unpkg.com/jspsych@6.3.1/plugins/jspsych-preload.js"></script>
 
   <style>
     body {
@@ -74,6 +75,18 @@
   /************* 初始化 timeline *************/
   var timeline = [];
 
+  /************* 新增：预加载所有视频（带进度条） *************/
+  var preload_trial = {
+    type: 'preload',
+    video: VIDEO_SEQUENCE,               // 这里将来换成你60条视频的数组
+    show_progress_bar: true,
+    message: '视频正在加载，请稍候……',
+    error_message: '部分视频加载失败，但实验仍将继续。',
+    continue_after_error: true,          // 万一某条加载失败，不整个卡死
+    max_load_time: 600000                // 最长等 600 秒（10 分钟），可按需要调整
+  };
+  timeline.push(preload_trial);
+
   /************* 第 0 页：按 Enter 解锁声音 + 说明键位 *************/
   var unlock_trial = {
     type: 'html-keyboard-response',
@@ -130,11 +143,6 @@
       type: 'html-keyboard-response',
       stimulus: `
         <div class="video-container">
-          <p style="text-align:center;margin-bottom:10px;">
-            条件：ACTIVE（主动）<br>
-            当前视频：${videoFile}<br>
-            当你想切换到下一个视频时，请按空格键（Space）。
-          </p>
           <video id="video-${index}" src="${videoFile}" controls playsinline></video>
         </div>
       `,
@@ -166,7 +174,14 @@
     };
   }
 
-  /************* PASSIVE SWIPE 条件（视图/动作分离版） *************/
+  /************* PASSIVE SWIPE 条件（视图/动作分离版） 
+   删除了下面在屏幕上的显示 183-184之间 <p style="text-align:center;margin-bottom:10px;">
+            条件：PASSIVE SWIPE（被动时间 + 主动按键）<br>
+            当前视频：${videoFile}<br>
+            请专注观看视频。视频会在适当时间自动停止，<br>
+            屏幕变成黑色并出现向上箭头，这时请尽快按空格键（Space）继续。
+          </p>
+  *************/
   function makePassiveSwipeVideoTrial(index, videoFile, yokedDurations) {
     var targetDwell = yokedDurations[index]; // ms，预定观看时间 T_a
 
@@ -267,11 +282,6 @@
       type: 'html-keyboard-response',
       stimulus: `
         <div class="video-container">
-          <p style="text-align:center;margin-bottom:10px;">
-            条件：PASSIVE NON-SWIPE（完全被动）<br>
-            当前视频：${videoFile}<br>
-            请<b>被动观看</b>，不要按任何键，视频会在适当时间自动切换。
-          </p>
           <video id="video-${index}" src="${videoFile}" controls playsinline></video>
         </div>
       `,
