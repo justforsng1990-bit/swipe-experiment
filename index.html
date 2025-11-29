@@ -86,7 +86,7 @@
         </p>
         <p style="font-size:16px;margin-top:20px;">
           Throughout the task:<br>
-          &bull; 在 ACTIVE 或 PASSIVE SWIPE 条件下，请按 <b>空格键（Space）</b> 切换。<br>
+          &bull; 在 ACTIVE 或 PASSIVE SWIPE 条件下，请按 <b>空格键（Space）</b> 进入下一个视频。<br>
           &bull; 在 PASSIVE NON-SWIPE 条件下，视频会自动切换。
         </p>
         <p style="font-size:14px;margin-top:10px;">
@@ -166,36 +166,42 @@
     };
   }
 
-  /************* PASSIVE SWIPE 条件：红点前 Space 无效，红点后 Space 切换 *************/
+  /************* PASSIVE SWIPE 条件（视图/动作分离版） *************/
   function makePassiveSwipeVideoTrial(index, videoFile, yokedDurations) {
-    var targetDwell = yokedDurations[index]; // ms
+    var targetDwell = yokedDurations[index]; // ms，预定观看时间 T_a
 
     return {
       type: 'html-keyboard-response',
       stimulus: `
         <div class="video-container">
           <p style="text-align:center;margin-bottom:10px;">
-            条件：PASSIVE SWIPE（被动时间，主动按键）<br>
+            条件：PASSIVE SWIPE（被动时间 + 主动按键）<br>
             当前视频：${videoFile}<br>
-            请<b>等待红点出现</b>，红点出现后尽快按空格键（Space）切换到下一个视频。
+            请专注观看视频。视频会在适当时间自动停止，<br>
+            屏幕变成黑色并出现向上箭头，这时请尽快按空格键（Space）继续。
           </p>
-          <div id="cue-dot"
-               style="width:20px;height:20px;border-radius:10px;background-color:red;opacity:0;margin-bottom:8px;"></div>
           <video id="video-${index}" src="${videoFile}" controls playsinline></video>
+          <div id="action-screen-${index}"
+               style="display:none;width:100%;height:60%;flex-direction:column;justify-content:center;align-items:center;">
+            <div style="font-size:60px;margin-bottom:20px;">↑</div>
+            <p style="font-size:22px;text-align:center;">
+              请现在按空格键（Space）进入下一个视频
+            </p>
+          </div>
         </div>
       `,
       choices: jsPsych.NO_KEYS,
       on_load: function() {
         var v = document.getElementById('video-' + index);
-        var cueDot = document.getElementById('cue-dot');
+        var actionScreen = document.getElementById('action-screen-' + index);
 
         v.muted = false;
         v.volume = 1.0;
 
         var trialStart = performance.now();
-        var cueShown = false;
-        var cueTime = null;
-        var cueTimeout = null;
+        var viewEnded = false;
+        var viewEndTime = null;
+        var viewTimeout = null;
 
         var p = v.play();
         if (p !== undefined) {
@@ -204,28 +210,41 @@
           });
         }
 
-        // 到达 yoke 时间点，显示红点
-        cueTimeout = setTimeout(function() {
-          cueDot.style.opacity = 1;
-          cueShown = true;
-          cueTime = performance.now();
+        // 到达 yoke 时间点：停止视频，切到黑屏+箭头（T_a）
+        viewTimeout = setTimeout(function() {
+          viewEnded = true;
+          viewEndTime = performance.now();
+
+          try {
+            v.pause();
+          } catch(e) {
+            console.log('pause error:', e);
+          }
+          v.style.display = 'none';
+
+          // 显示动作提示屏幕
+          actionScreen.style.display = 'flex';
         }, targetDwell);
 
-        // 专门给 ps 条件写一个 Space 监听器：
+        // Space 监听：只有在 viewEnded（黑屏出现）之后才响应
         function spaceHandler(e) {
           if (e.code === 'Space' || e.keyCode === 32) {
             e.preventDefault();
-            // 红点未出现前的 Space 一律忽略
-            if (!cueShown) {
+
+            if (!viewEnded) {
+              // 视图阶段的 Space 一律忽略
               return;
             }
 
             document.removeEventListener('keyup', spaceHandler);
-            if (cueTimeout) clearTimeout(cueTimeout);
+            if (viewTimeout) {
+              clearTimeout(viewTimeout);
+            }
 
             var now = performance.now();
-            var dwell = now - trialStart;
-            var rt_from_cue = cueShown ? (now - cueTime) : null;
+            var totalDwell = now - trialStart;
+            var viewDwell = viewEndTime ? (viewEndTime - trialStart) : null;
+            var actionRT = viewEndTime ? (now - viewEndTime) : null;
 
             jsPsych.finishTrial({
               condition: 'passive_swipe',
@@ -233,10 +252,10 @@
               video_index: index,
               video_file: videoFile,
               target_dwell_ms: targetDwell,
-              ended_by: 'space',
-              dwell_ms: dwell,
-              rt_from_cue_ms: rt_from_cue,
-              cue_shown: cueShown
+              view_dwell_ms: viewDwell,
+              action_rt_ms: actionRT,
+              total_trial_ms: totalDwell,
+              ended_by: 'space'
             });
           }
         }
@@ -291,27 +310,6 @@
             dwell_ms: dwell
           });
         }, targetDwell);
-
-        // 如需调试可以暂时打开放 ESC 跳过（正式实验建议关掉）
-        /*
-        function debugSkip(e) {
-          if (e.code === 'Escape') {
-            clearTimeout(autoTimeout);
-            var dwell = performance.now() - trialStart;
-            document.removeEventListener('keydown', debugSkip);
-            jsPsych.finishTrial({
-              condition: 'passive_non_swipe',
-              trace_id: TRACE_ID,
-              video_index: index,
-              video_file: videoFile,
-              target_dwell_ms: targetDwell,
-              ended_by: 'debug_escape',
-              dwell_ms: dwell
-            });
-          }
-        }
-        document.addEventListener('keydown', debugSkip);
-        */
       }
     };
   }
