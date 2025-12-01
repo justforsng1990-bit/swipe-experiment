@@ -37,6 +37,7 @@
     video {
       max-width: 100%;
       max-height: 80%;
+      pointer-events: none;
     }
 
     /* ===== 强化 jsPsych survey-likert 的可读性 ===== */
@@ -197,7 +198,7 @@
         type: 'html-keyboard-response',
         stimulus: `
         <div class="video-container">
-          <video id="video-${index}" src="${videoFile}" controls playsinline></video>
+          <video id="video-${index}" src="${videoFile}" playsinline></video>
         </div>
       `,
         choices: jsPsych.NO_KEYS,
@@ -243,7 +244,7 @@
         type: 'html-keyboard-response',
         stimulus: `
         <div class="video-container">
-          <video id="video-${index}" src="${videoFile}" controls playsinline></video>
+          <video id="video-${index}" src="${videoFile}" playsinline></video>
           <div id="action-screen-${index}"
      style="
        display:none;
@@ -362,7 +363,7 @@
         type: 'html-keyboard-response',
         stimulus: `
         <div class="video-container">
-          <video id="video-${index}" src="${videoFile}" controls playsinline></video>
+          <video id="video-${index}" src="${videoFile}" playsinline></video>
         </div>
       `,
         choices: jsPsych.NO_KEYS,  // 按键不会结束 trial
