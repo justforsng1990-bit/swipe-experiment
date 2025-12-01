@@ -193,41 +193,56 @@
     }
 
     /************* ACTIVE 条件：自由按 Space 切换 *************/
-    function makeActiveVideoTrial(index, videoFile) {
-      return {
-        type: 'html-keyboard-response',
-        stimulus: `
-        <div class="video-container">
-          <video id="video-${index}" src="${videoFile}" playsinline></video>
-        </div>
-      `,
-        choices: jsPsych.NO_KEYS,
-        on_load: function () {
-          var v = document.getElementById('video-' + index);
-          v.muted = false;
-          v.volume = 1.0;
+function makeActiveVideoTrial(index, videoFile) {
+  return {
+    type: 'html-keyboard-response',
+    stimulus: `
+      <div class="video-container">
+        <video id="video-${index}" src="${videoFile}" playsinline></video>
+      </div>
+    `,
+    choices: jsPsych.NO_KEYS,
+    on_load: function () {
+      var v = document.getElementById('video-' + index);
+      v.muted = false;
+      v.volume = 1.0;
 
-          var trialStart = performance.now();
-          var p = v.play();
-          if (p !== undefined) {
-            p.catch(function (err) {
-              console.log(videoFile + ' play() 被拦截：', err);
-            });
-          }
+      let realStart = null;
 
-          addSpaceListener(function () {
-            var dwell = performance.now() - trialStart;
-            jsPsych.finishTrial({
-              condition: 'active',
-              video_index: index,
-              video_file: videoFile,
-              ended_by: 'space',
-              dwell_ms: dwell
-            });
-          });
-        }
+      // 关键：视频真正开始播放的时间点
+      v.onplaying = function () {
+        realStart = performance.now();
       };
+
+      // 播放视频
+      var p = v.play();
+      if (p !== undefined) {
+        p.catch(function (err) {
+          console.log(videoFile + ' play() 被拦截：', err);
+        });
+      }
+
+      // 按 Space 结束 trial，并用 realStart 计算 dwell
+      addSpaceListener(function () {
+        // 保险：如果 realStart 还没被写入（极端情况下），直接忽略这次按键
+        if (realStart === null) {
+          console.warn('Space pressed before video started playing; ignoring.');
+          return;
+        }
+
+        var dwell = performance.now() - realStart;
+
+        jsPsych.finishTrial({
+          condition: 'active',
+          video_index: index,
+          video_file: videoFile,
+          ended_by: 'space',
+          dwell_ms: dwell
+        });
+      });
     }
+  };
+}
 
     /************* PASSIVE SWIPE 条件（视图/动作分离版） 
      删除了下面在屏幕上的显示 183-184之间 <p style="text-align:center;margin-bottom:10px;">
@@ -288,10 +303,13 @@
           v.muted = false;
           v.volume = 1.0;
 
-          var trialStart = performance.now();
-          var viewEnded = false;
-          var viewEndTime = null;
-          var viewTimeout = null;
+          let realStart = null;
+          let viewEndTime = null;
+
+          // 视频真正开始播放的时间点
+          v.onplaying = function () {
+            realStart = performance.now();
+          };
 
           var p = v.play();
           if (p !== undefined) {
@@ -300,56 +318,41 @@
             });
           }
 
-          // 到达 yoke 时间点：停止视频，切到黑屏+箭头（T_a）
+          // 在 yoke 时间点停止视频
           viewTimeout = setTimeout(function () {
             viewEnded = true;
             viewEndTime = performance.now();
 
-            try {
-              v.pause();
-            } catch (e) {
-              console.log('pause error:', e);
-            }
+            try { v.pause(); } catch (e) { console.log('pause error:', e); }
             v.style.display = 'none';
 
-            // 显示动作提示屏幕
             actionScreen.style.display = 'flex';
           }, targetDwell);
 
-          // Space 监听：只有在 viewEnded（黑屏出现）之后才响应
+          // Space —— 只在黑屏出现之后响应
           function spaceHandler(e) {
-            if (e.code === 'Space' || e.keyCode === 32) {
-              e.preventDefault();
+            if (e.code !== 'Space' && e.keyCode !== 32) return;
 
-              if (!viewEnded) {
-                // 视图阶段的 Space 一律忽略
-                return;
-              }
+            if (!viewEnded) return;           // 黑屏前全部忽略
+            document.removeEventListener('keyup', spaceHandler);
 
-              document.removeEventListener('keyup', spaceHandler);
-              if (viewTimeout) {
-                clearTimeout(viewTimeout);
-              }
+            const now = performance.now();
+            const viewDwell = viewEndTime - realStart; // 观看阶段时长
+            const actionRT = now - viewEndTime;        // 黑屏反应时
+            const total = now - realStart;
 
-              var now = performance.now();
-              var totalDwell = now - trialStart;
-              var viewDwell = viewEndTime ? (viewEndTime - trialStart) : null;
-              var actionRT = viewEndTime ? (now - viewEndTime) : null;
-
-              jsPsych.finishTrial({
-                condition: 'passive_swipe',
-                trace_id: TRACE_ID,
-                video_index: index,
-                video_file: videoFile,
-                target_dwell_ms: targetDwell,
-                view_dwell_ms: viewDwell,
-                action_rt_ms: actionRT,
-                total_trial_ms: totalDwell,
-                ended_by: 'space'
-              });
-            }
+            jsPsych.finishTrial({
+              condition: 'passive_swipe',
+              trace_id: TRACE_ID,
+              video_index: index,
+              video_file: videoFile,
+              target_dwell_ms: targetDwell,
+              view_dwell_ms: viewDwell,
+              action_rt_ms: actionRT,
+              total_trial_ms: total,
+              ended_by: 'space'
+            });
           }
-
           document.addEventListener('keyup', spaceHandler);
         }
       };
@@ -372,8 +375,11 @@
           v.muted = false;
           v.volume = 1.0;
 
-          var trialStart = performance.now();
-          var autoTimeout = null;
+          let realStart = null;
+
+          v.onplaying = function () {
+            realStart = performance.now();
+          };
 
           var p = v.play();
           if (p !== undefined) {
@@ -382,9 +388,9 @@
             });
           }
 
-          // 到目标时间自动结束 trial
+          // 到 yoke 时间点自动结束
           autoTimeout = setTimeout(function () {
-            var dwell = performance.now() - trialStart;
+            var dwell = performance.now() - realStart;
             jsPsych.finishTrial({
               condition: 'passive_non_swipe',
               trace_id: TRACE_ID,
@@ -395,6 +401,7 @@
               dwell_ms: dwell
             });
           }, targetDwell);
+
         }
       };
     }
