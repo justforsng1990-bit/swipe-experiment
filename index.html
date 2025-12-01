@@ -134,8 +134,8 @@
       type: 'preload',
       video: VIDEO_SEQUENCE,               // 这里将来换成你60条视频的数组
       show_progress_bar: true,
-      message: '视频正在加载，请稍候……',
-      error_message: '部分视频加载失败，但实验仍将继续。',
+      message: 'Loading videos. Please wait…',
+      error_message: 'Some videos failed to load, but the study will continue.',
       continue_after_error: true,          // 万一某条加载失败，不整个卡死
       max_load_time: 60000                // 最长等 60 秒（1 分钟），可按需要调整
     };
@@ -147,17 +147,17 @@
       stimulus: `
       <div style="height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;color:white;">
         <p style="font-size:22px;text-align:center;">
-          接下来你将观看一系列短视频。<br><br>
-          为了让后续视频可以自动播放并带有声音，<br>
-          请按下回车键（Enter）开始。
+          You will now watch a series of short videos.<br><br>
+          To allow the videos to play automatically with sound,<br>
+          please press the <b>Enter</b> key to start.
         </p>
         <p style="font-size:16px;margin-top:20px;">
           Throughout the task:<br>
-          &bull; 在 ACTIVE 或 PASSIVE SWIPE 条件下，请按 <b>空格键（Space）</b> 进入下一个视频。<br>
-          &bull; 在 PASSIVE NON-SWIPE 条件下，视频会自动切换。
+          &bull; In the <b>ACTIVE</b> or <b>PASSIVE SWIPE</b> condition, press the <b>Space</b> bar to go to the next video.<br>
+          &bull; In the <b>PASSIVE NON-SWIPE</b> condition, the videos will advance automatically.
         </p>
         <p style="font-size:14px;margin-top:10px;">
-          当前条件：${CONDITION.toUpperCase()}${(CONDITION !== 'active') ? ('，trace=' + TRACE_ID) : ''}
+          Current condition：${CONDITION.toUpperCase()}${(CONDITION !== 'active') ? ('，trace=' + TRACE_ID) : ''}
         </p>
       </div>
     `,
@@ -255,12 +255,12 @@
        text-align:center;
      ">
      
-     <!-- 向下箭头（大号） -->
+     <!-- Down arrow -->
      <div style="font-size:80px; margin-bottom:25px;">
         &#x2193;   <!-- Unicode 向下箭头 ↓ -->
      </div>
 
-     <!-- 空格键键帽 -->
+     <!-- SPACE key visual -->
      <div style="
         font-size:24px;
         padding:15px 60px;
@@ -274,7 +274,7 @@
      </div>
 
      <p style="font-size:20px; opacity:0.8;">
-        按下空格键进入下一条视频
+        Press the Space bar to go to the next video.
      </p>
 </div>
         </div>
@@ -750,7 +750,8 @@
       type: 'html-keyboard-response',
       stimulus: `
       <p style="font-size:24px; text-align:center; margin-top:40vh;">
-        所有视频播放完毕。<br><br>
+        All tasks have been completed.<br><br>
+        Thank you for your participation!<br><br>
         Press any key to finish.
       </p>
     `
