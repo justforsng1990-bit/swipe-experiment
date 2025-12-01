@@ -311,8 +311,13 @@
                 function startVideo(i) {
                     if (i < 0 || i >= N_VIDEOS) return;
                     currentIndex = i;
-                    currentStartTime = performance.now();
+                    currentStartTime = null;      // 先清空
                     inTransition = false;
+
+                    // 真正开始播放时再记录 time 0
+                    video.onplaying = function () {
+                        currentStartTime = performance.now();
+                    };
 
                     video.src = VIDEO_SEQUENCE[i];
                     video.style.display = 'block';
@@ -443,10 +448,15 @@
                 function startVideo(i) {
                     if (i < 0 || i >= N_VIDEOS) return;
                     currentIndex = i;
-                    currentStartTime = performance.now();
+                    currentStartTime = null;      // 用 onplaying 记录
                     phase = 'view';
                     inTransition = false;
                     actionStartTime = null;
+
+                    // 视频真正开始播放时记录起点
+                    video.onplaying = function () {
+                        currentStartTime = performance.now();
+                    };
 
                     video.src = VIDEO_SEQUENCE[i];
                     video.style.display = 'block';
@@ -462,7 +472,6 @@
                         });
                     }
 
-                    // 在 Tₐ 时刻自动停止视频 + 切到黑屏提示
                     if (tTimeoutId) clearTimeout(tTimeoutId);
                     tTimeoutId = setTimeout(function () {
                         phase = 'action';
@@ -473,6 +482,7 @@
                         actionScreen.style.display = 'flex';
                     }, targetDwell);
                 }
+
 
                 function goToNextVideoFromAction() {
                     if (inTransition) return;
@@ -585,7 +595,12 @@
                 function startVideo(i) {
                     if (i < 0 || i >= N_VIDEOS) return;
                     currentIndex = i;
-                    currentStartTime = performance.now();
+                    currentStartTime = null;   // 等 onplaying
+
+                    // 真正开始播放时记录
+                    video.onplaying = function () {
+                        currentStartTime = performance.now();
+                    };
 
                     video.src = VIDEO_SEQUENCE[i];
                     video.style.display = 'block';
@@ -605,6 +620,7 @@
                         goToNextVideoAuto();
                     }, targetDwell);
                 }
+
 
                 function goToNextVideoAuto() {
                     var now = performance.now();
