@@ -11,6 +11,10 @@
     <link href="https://unpkg.com/jspsych@6.3.1/css/jspsych.css" rel="stylesheet" />
     <script src="https://unpkg.com/jspsych@6.3.1/plugins/jspsych-html-keyboard-response.js"></script>
     <script src="https://unpkg.com/jspsych@6.3.1/plugins/jspsych-preload.js"></script>
+    <script src="https://unpkg.com/jspsych@6.3.1/plugins/jspsych-survey-likert.js"></script>
+    <script src="https://unpkg.com/jspsych@6.3.1/plugins/jspsych-survey-multi-choice.js"></script>
+    <script src="https://unpkg.com/jspsych@6.3.1/plugins/jspsych-survey-multi-select.js"></script>
+
 
     <style>
         html,
@@ -27,13 +31,13 @@
 
         #jspsych-target {
             width: 100vw;
-            height: 100vh;
+            height: 100dvh;
         }
 
         .video-container {
             position: relative;
             width: 100vw;
-            height: 100vh;
+            height: 100dvh;
             background-color: #000;
             overflow: hidden;
         }
@@ -58,6 +62,43 @@
             font-size: 60px;
             margin-bottom: 20px;
         }
+
+        /* ===== 强化 jsPsych survey-likert 的可读性 ===== */
+        .jspsych-survey-likert-statement {
+            font-size: 20px;
+            /* 问题本身更大一点 */
+            color: #ffffff;
+            /* 纯白 */
+            margin-bottom: 10px;
+        }
+
+        .jspsych-survey-likert-opts {
+            margin-top: 6px;
+        }
+
+        /* 每个刻度下面的文字（1-5 / 1-9） */
+        .jspsych-survey-likert-opts li {
+            font-size: 16px;
+            /* 刻度文字变大 */
+            color: #ffffff;
+            /* 纯白 */
+            opacity: 1;
+            /* 去掉灰淡效果 */
+        }
+
+        /* 有些版本文字放在 span 里，再保险一下 */
+        .jspsych-survey-likert-opts li span,
+        .jspsych-survey-likert-opts li label {
+            font-size: 16px;
+            color: #ffffff;
+            opacity: 1;
+        }
+
+        /* 把两端的刻度（1 和最高分）加粗，更醒目 */
+        .jspsych-survey-likert-opts li:first-child,
+        .jspsych-survey-likert-opts li:last-child {
+            font-weight: 600;
+        }
     </style>
 </head>
 
@@ -74,6 +115,15 @@
 
         var CONDITION = getUrlParam('cond', 'active');  // 'active' | 'ps' | 'pn'
         var TRACE_ID = getUrlParam('trace', '1');      // yoke trace id，给 ps / pn 用
+
+        /************* 通用量表标签 *************/
+        var LIKERT_5 = [
+            "1 - Strongly disagree",
+            "2",
+            "3",
+            "4",
+            "5 - Strongly agree"
+        ];
 
         /************* 视频序列 *************/
         var VIDEO_SEQUENCE = [
@@ -559,6 +609,325 @@
             }
         };
 
+        /************* Measures 1：Post-viewing self-report & checks *************/
+        var post_view_likert_trial = {
+            type: 'survey-likert',
+            preamble: `
+    <div style="padding:10px 5px 0 5px;">
+      <p style="font-size:18px; text-align:left;">
+        You have finished watching the video feed.<br><br>
+        Please answer the following questions about your experience.
+      </p>
+    </div>
+  `,
+            questions: [
+                {
+                    prompt: "I felt that I was in control of when the next video appeared.",
+                    name: "agency_control",
+                    labels: LIKERT_5,
+                    required: true
+                },
+                {
+                    prompt: "It felt like the system decided when to move to the next video, not me.",
+                    name: "agency_system",
+                    labels: LIKERT_5,
+                    required: true
+                },
+                {
+                    prompt: "I felt I was continuing out of habit rather than deliberate choice.",
+                    name: "habit_vs_deliberate",
+                    labels: LIKERT_5,
+                    required: true
+                },
+                {
+                    prompt: "If the task had not ended, I would probably have kept going for quite a while.",
+                    name: "continue_watching",
+                    labels: LIKERT_5,
+                    required: true
+                },
+                {
+                    prompt: "I found the videos interesting to watch.",
+                    name: "interest",
+                    labels: LIKERT_5,
+                    required: true
+                },
+                {
+                    prompt: "I found the videos boring.",
+                    name: "boredom",
+                    labels: LIKERT_5,
+                    required: true
+                },
+                {
+                    prompt: `
+            <div style="text-align:left;">
+              <p>Please indicate how you felt overall while watching the videos (valence).</p>
+              <img src="sam_valence.png" style="max-width:100%;height:auto;">
+            </div>
+          `,
+                    name: "sam_valence",
+                    labels: ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
+                    required: true
+                },
+                {
+                    prompt: `
+            <div style="text-align:left;">
+              <p>Please indicate how aroused or stimulated you felt overall.</p>
+              <img src="sam_arousal.png" style="max-width:100%;height:auto;">
+            </div>
+          `,
+                    name: "sam_arousal",
+                    labels: ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
+                    required: true
+                },
+                {
+                    // attention check：用 1–5
+                    prompt: "To show that you are paying attention, please select ‘4’ for this item.",
+                    name: "attention_check_1to5",
+                    labels: [
+                        "1",
+                        "2",
+                        "3",
+                        "4",
+                        "5"
+                    ],
+                    required: true
+                }
+            ],
+            randomize_question_order: false
+        };
+
+
+        /************* Measures 2：Recognition memory（示例：一页 4 张图） *************/
+        var RECOG_ITEMS = [
+            { id: "rec1", file: "rec_real_01.png", status: "real" },
+            { id: "rec2", file: "rec_real_02.png", status: "real" },
+            { id: "rec3", file: "rec_real_03.png", status: "real" },
+            { id: "rec4", file: "rec_real_04.png", status: "real" }
+        ];
+
+        // 构建 HTML：4 张图 + checkbox
+        function buildRecognitionHTML() {
+            var html = `
+        <div style="width:100vw;height:100vh;display:flex;flex-direction:column;justify-content:flex-start;align-items:center;color:white;padding:10px;box-sizing:border-box;">
+          <p style="font-size:18px;text-align:left;width:100%;max-width:500px;margin-bottom:10px;">
+            On this page you will see four still images taken from short videos.<br>
+            Please tick the videos that you remember seeing in the feed.
+          </p>
+        <div style="display:flex;flex-wrap:wrap;justify-content:center;gap:10px;width:100%;max-width:500px;">
+      `;
+
+            RECOG_ITEMS.forEach(function (item) {
+                html += `
+        <div style="width:48%;display:flex;flex-direction:column;align-items:center;margin-bottom:10px;">
+          <img src="${item.file}" style="width:100%;height:auto;border:1px solid #666;margin-bottom:5px;" />
+          <label style="font-size:14px;">
+            <input type="checkbox" id="${item.id}" style="margin-right:5px;">
+            I saw this video
+          </label>
+        </div>
+      `;
+            });
+
+            html += `
+      </div>
+        <button id="rec-next-btn"
+            style="margin-top:15px;padding:10px 20px;font-size:16px;border-radius:8px;border:none;background:#444;color:#fff;">
+          Continue
+        </button>
+      </div>
+    `;
+            return html;
+        }
+
+        var recognition_trial = {
+            type: 'html-keyboard-response',
+            stimulus: buildRecognitionHTML,
+            choices: jsPsych.NO_KEYS,
+            on_load: function () {
+                var btn = document.getElementById('rec-next-btn');
+                btn.addEventListener('click', function () {
+                    // 读取每个 checkbox 是否勾选
+                    var selections = {};
+                    RECOG_ITEMS.forEach(function (item) {
+                        var checked = document.getElementById(item.id).checked;
+                        selections[item.id] = {
+                            checked: checked,
+                            file: item.file,
+                            status: item.status
+                        };
+                    });
+                    jsPsych.finishTrial({
+                        recognition_responses: selections
+                    });
+                });
+            }
+        };
+
+        /************* Measures 3：Delay Discounting（简版示例） *************/
+
+        // TODO: 在正式版本中，把 items 扩展到 27 个，并用 Kirby 的标准金额和延迟
+        var DD_ITEMS = [
+            {
+                name: "dd1",
+                prompt: "1. Would you prefer £54 today or £55 in 117 days?",
+                options: ["£54 today", "£55 in 117 days"]
+            },
+            {
+                name: "dd2",
+                prompt: "2. Would you prefer £55 today or £75 in 61 days?",
+                options: ["£55 today", "£75 in 61 days"]
+            },
+            {
+                name: "dd3",
+                prompt: "3. Would you prefer £19 today, or £25 in 53 days?",
+                options: ["£19 today", "£25 in 53 days"]
+            },
+            {
+                name: "dd4",
+                prompt: "4. Would you prefer £31 today, or £85 in 7 days?",
+                options: ["£31 today", "£85 in 7 days?"]
+            },
+            {
+                name: "dd5",
+                prompt: "5. Would you prefer £14 today, or £25 in 19 days?",
+                options: ["£14 today", "£25 in 19 days"]
+            },
+            {
+                name: "dd6",
+                prompt: "6. Would you prefer £47 today, or £50 in 160 days?",
+                options: ["£47 today", "£50 in 160 days"]
+            },
+            {
+                name: "dd7",
+                prompt: "7. Would you prefer £15 today, or £35 in 13 days?",
+                options: ["£15 today", "£35 in 1 month"]
+            },
+            {
+                name: "dd8",
+                prompt: "8. Would you prefer £25 today, or £60 in 14 days?",
+                options: ["£25 today", "£60 in 4 months"]
+            },
+            {
+                name: "dd9",
+                prompt: "9. Would you prefer £78 today, or £80 in 162 days?",
+                options: ["£78 today", "£80 in 162 days"]
+            },
+            {
+                name: "dd10",
+                prompt: "10. Would you prefer £40 today, or £55 in 62 days?",
+                options: ["£40 today", "£55 in 62 days"]
+            },
+            {
+                name: "dd11",
+                prompt: "11. Would you prefer £11 today, or £30 in 7 days?",
+                options: ["£11 today", "£30 in 7 days"]
+            },
+            {
+                name: "dd12",
+                prompt: "12. Would you prefer £67 today, or £75 in 119 days?",
+                options: ["£67 today", "£75 in 119 days"]
+            },
+            {
+                name: "dd13",
+                prompt: "13. Would you prefer £34 today, or £35 in 186 days?",
+                options: ["£34 today", "£35 in 186 days"]
+            },
+            {
+                name: "dd14",
+                prompt: "14. Would you prefer £27 today, or £50 in 21 days?",
+                options: ["£27 today", "£50 in 21 days"]
+            },
+            {
+                name: "dd15",
+                prompt: "15. Would you prefer £69 today, or £85 in 91 days?",
+                options: ["£69 today", "£85 in 91 days"]
+            },
+            {
+                name: "dd16",
+                prompt: "16. Would you prefer £49 today, or £60 in 89 days?",
+                options: ["£49 today", "£60 in 89 days"]
+            },
+            {
+                name: "dd17",
+                prompt: "17. Would you prefer £80 today, or £85 in 157 days?",
+                options: ["£80 today", "£85 in 157 days"]
+            },
+            {
+                name: "dd18",
+                prompt: "18. Would you prefer £24 today, or £35 in 29 days?",
+                options: ["£24 today", "£35 in 29 days"]
+            },
+            {
+                name: "dd19",
+                prompt: "19. Would you prefer £33 today, or £80 in 14 days?",
+                options: ["£33 today", "£80 in 14 days"]
+            },
+            {
+                name: "dd20",
+                prompt: "20. Would you prefer £28 today, or £30 in 179 days?",
+                options: ["£28 today", "£30 in 179 days"]
+            },
+            {
+                name: "dd21",
+                prompt: "21. Would you prefer £34 today, or £50 in 30 days?",
+                options: ["£34 today", "£50 in 30 days"]
+            },
+            {
+                name: "dd22",
+                prompt: "22. Would you prefer £25 today, or £30 in 80 days?",
+                options: ["£25 today", "£30 in 80 days"]
+            },
+            {
+                name: "dd23",
+                prompt: "23. Would you prefer £41 today, or £75 in 20 days?",
+                options: ["£41 today", "£75 in 20 days"]
+            },
+            {
+                name: "dd24",
+                prompt: "24. Would you prefer £54 today, or £60 in 111 days?",
+                options: ["£54 today", "£60 in 111 days"]
+            },
+            {
+                name: "dd25",
+                prompt: "25. Would you prefer £54 today, or £80 in 30 days?",
+                options: ["£54 today", "£80 in 30 days"]
+            },
+            {
+                name: "dd26",
+                prompt: "26. Would you prefer £22 today, or £25 in 136 days?",
+                options: ["£22 today", "£25 in 136 days"]
+            },
+            {
+                name: "dd27",
+                prompt: "27. Would you prefer £20 today, or £55 in 7 days?",
+                options: ["£20 today", "£55 in 7 days"]
+            }
+        ];
+
+        var delay_discount_trial = {
+            type: 'survey-multi-choice',
+            preamble: `
+        <div style="padding:10px 5px 0 5px;">
+          <p style="font-size:18px;text-align:left;">
+            In this final part, you will make 27 choices.<br>
+            For each of the choices, please indicate which reward you would prefer:<br>
+            the smaller reward today, or the larger reward in the specified number of days.<br><br>
+            Please answer as if these choices were real.
+          </p>
+        </div>
+      `,
+            questions: DD_ITEMS.map(function (item) {
+                return {
+                    prompt: item.prompt,
+                    name: item.name,
+                    options: item.options,
+                    required: true
+                };
+            }),
+            randomize_question_order: false
+        };
+
+
         /************* 根据 CONDITION 选择对应的 trial *************/
         if (CONDITION === 'active') {
             timeline.push(active_swipe_trial);
@@ -569,6 +938,11 @@
         } else {
             alert('未知条件 cond=' + CONDITION);
         }
+
+        /************* 在 viewing 之后追加 Measures *************/
+        timeline.push(post_view_likert_trial);
+        timeline.push(recognition_trial);
+        timeline.push(delay_discount_trial);
 
         /************* 结束页 *************/
         var end_trial = {
