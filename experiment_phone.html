@@ -22,36 +22,63 @@
             margin: 0;
             padding: 0;
             width: 100%;
-            height: 100%;
+            height: 100dvh;
             background-color: #000;
             color: #fff;
-            overflow: hidden;
+            overflow-x: hidden;
+            overflow-y: hidden;
             /* 防止页面滚动 */
+            touch-action: pan-y;
+            overscroll-behavior: contain;
         }
 
         #jspsych-target {
             width: 100vw;
             height: 100dvh;
+            touch-action: pan-y;
         }
 
         .video-container {
-            position: relative;
             width: 100vw;
             height: 100dvh;
+            position: relative;
             background-color: #000;
             overflow: hidden;
         }
 
-        /* 真·全屏视频 */
-        video {
+        .video-container video {
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            /* 绝对居中 */
+
             height: 100%;
+            /* 竖屏视频：高度铺满 */
+            width: auto;
+            /* 宽度按比例自适应 */
+            max-height: 100%;
+            max-width: none;
+
+            object-fit: cover;
             background-color: #000;
-            object-fit: contain;
-            /* 或 cover，更接近 TikTok，但可能裁边 */
+        }
+
+        #start-screen {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            /* 绝对几何中心 */
+
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            color: white;
+            padding: 20px;
+            box-sizing: border-box;
         }
 
         .center-text {
@@ -149,6 +176,31 @@
             }
         }
 
+        // 可选兜底：阻止明显的横向滑动导致页面晃动
+        (function () {
+            var startX = null;
+            var startY = null;
+
+            document.addEventListener('touchstart', function (e) {
+                if (!e.touches || e.touches.length === 0) return;
+                startX = e.touches[0].clientX;
+                startY = e.touches[0].clientY;
+            }, { passive: true });
+
+            document.addEventListener('touchmove', function (e) {
+                if (startX === null || startY === null) return;
+                if (!e.touches || e.touches.length === 0) return;
+
+                var dx = e.touches[0].clientX - startX;
+                var dy = e.touches[0].clientY - startY;
+
+                // 如果横向位移明显大于纵向，就认为是“横滑”，阻止页面跟着动
+                if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 10) {
+                    e.preventDefault();
+                }
+            }, { passive: false });
+        })();
+
         /************* Swipe 检测工具：向上滑 *************/
         function installSwipeUpHandler(callback, threshold) {
             threshold = threshold || 50; // 至少上滑 50px
@@ -200,11 +252,11 @@
             stimulus: `
       <div style="height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;color:white;padding:20px;box-sizing:border-box;">
         <p style="font-size:22px;text-align:center;margin-bottom:20px;">
-          接下来你将观看一系列短视频。<br><br>
-          当前条件：<b>${CONDITION.toUpperCase()}</b>${(CONDITION !== 'active') ? ('，trace=' + TRACE_ID) : ''}
+          You will now watch a series of short videos.<br><br>
+          Current condition:<b>${CONDITION.toUpperCase()}</b>${(CONDITION !== 'active') ? ('，trace=' + TRACE_ID) : ''}
         </p>
         <p style="font-size:16px;text-align:center;margin-top:10px;">
-          请轻触屏幕任意位置开始。
+          Tap anywhere on the screen to begin.
         </p>
       </div>
     `,
@@ -224,15 +276,14 @@
             type: 'html-keyboard-response',
             stimulus: `
       <div class="video-container" id="container-main">
-        <div id="start-screen"
-             style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;">
+        <div id="start-screen">
           <div class="arrow">↑</div>
           <p class="center-text" style="font-size:22px;">
-            现在请 <b>向上滑动（swipe up）</b> 开始观看第一个视频。
+            Swipe up to watch the first video.
           </p>
           <p class="center-text" style="font-size:14px;opacity:0.7;margin-top:20px;">
-            在观看过程中，你可以向上滑动切换到下一条视频。<br>
-            如果你什么都不做，视频播放结束后也会自动切换。
+            During the task, swipe up to move to the next video. <br>
+            If you do nothing, the next video will play automatically when the current one ends.
           </p>
         </div>
         <video id="main-video"
@@ -343,27 +394,27 @@
              style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;">
           <div class="arrow">↑</div>
           <p class="center-text" style="font-size:22px;">
-            现在请 <b>向上滑动（swipe up）</b> 开始观看第一个视频。
+            Swipe up to watch the first video.
           </p>
           <p class="center-text" style="font-size:14px;opacity:0.7;margin-top:20px;">
-            请专注观看视频。每条视频会在适当时间自动停止，<br>
-            屏幕变黑并出现箭头，这时请向上滑动进入下一条。
+            Please focus on the video. Each video will stop at a preset time.<br>
+            When the screen turns black and the arrow appears, swipe up to continue.
           </p>
         </div>
 
-        <!-- 主视频 -->
+        <!-- Main video -->
         <video id="main-video"
                src=""
                playsinline
                style="display:none;"></video>
 
-        <!-- 动作提示黑屏：视频在 Tₐ 停止后才会显示 -->
+        <!-- Black transition screen -->
         <div id="action-screen"
              style="display:none;position:absolute;top:0;left:0;width:100%;height:100%;
                     background:#000;flex-direction:column;justify-content:center;align-items:center;">
           <div class="arrow">↑</div>
           <p class="center-text" style="font-size:22px;">
-            请现在 <b>向上滑动（swipe up）</b> 进入下一个视频
+            Swipe up to continue to the next video.
           </p>
         </div>
       </div>
@@ -507,8 +558,8 @@
         <div id="start-screen"
              style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;">
           <p class="center-text" style="font-size:22px;">
-            接下来你将<b>被动观看</b>一系列视频。<br>
-            请不要滑动或点击，视频会自动切换。
+            You will now <b>passively watch</b> a series of videos.<br>
+            Please do not swipe or tap. The videos will advance automatically.
           </p>
         </div>
         <video id="main-video"
@@ -951,18 +1002,18 @@
     <div class="video-container">
       <div style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;">
         <p class="center-text" style="font-size:24px;">
-          所有视频播放完毕。<br><br>
-          感谢你的参与！
+          All tasks have been completed.<br><br>
+          Thank you for your participation!
         </p>
         <p class="center-text" style="font-size:14px;opacity:0.8;margin-top:10px;">
-          如需下载本次测试的数据，请点击下面的按钮。
+          Click the button below to download your data.
         </p>
         <button id="download-btn"
                 style="margin-top:20px;padding:10px 20px;font-size:16px;border-radius:8px;border:none;cursor:pointer;">
-          下载数据（CSV）
+          Download Data (CSV)
         </button>
         <p class="center-text" style="font-size:12px;opacity:0.6;margin-top:15px;">
-          下载完成后，你可以关闭本页面。
+          After downloading, you may close this page.
         </p>
       </div>
     </div>
