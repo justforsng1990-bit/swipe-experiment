@@ -407,9 +407,106 @@ function makeActiveVideoTrial(index, videoFile) {
     }
 
     /************* Measures 1：Post-viewing self-report & checks *************/
-    var post_view_likert_trial = {
-      type: 'survey-likert',
-      preamble: `
+       // 1) 先建一个“基础题目”数组（不含 habit 题）
+        var post_view_questions = [
+            {
+                prompt: "I felt that I was in control of when the next video appeared.",
+                name: "agency_control",
+                labels: LIKERT_5,
+                required: true
+            },
+            {
+                prompt: "It felt like the system decided when to move to the next video, not me.",
+                name: "agency_system",
+                labels: LIKERT_5,
+                required: true
+            },
+            {
+                prompt: "If the task had not ended, I would probably have kept going for quite a while.",
+                name: "continue_watching",
+                labels: LIKERT_5,
+                required: true
+            },
+            {
+                prompt: "I found the videos interesting to watch.",
+                name: "interest",
+                labels: LIKERT_5,
+                required: true
+            },
+            {
+                prompt: "I found the videos boring.",
+                name: "boredom",
+                labels: LIKERT_5,
+                required: true
+            },
+            {
+                prompt: `
+            <div style="text-align:left;">
+              <p>Please indicate how you felt overall while watching the videos.</p>
+              <img src="sam_valence.png" style="max-width:100%;height:auto;">
+            </div>
+          `,
+                name: "sam_valence",
+                labels: ["1", "2", "3", "4", "5"],
+                required: true
+            },
+            {
+                prompt: `
+            <div style="text-align:left;">
+              <p>Please indicate how you felt overall while watching the videos.</p>
+              <img src="sam_arousal.png" style="max-width:100%;height:auto;">
+            </div>
+          `,
+                name: "sam_arousal",
+                labels: ["1", "2", "3", "4", "5"],
+                required: true
+            },
+            {
+                prompt: `
+            <div style="text-align:left;">
+              <p>Please indicate how you felt overall while watching the videos.</p>
+              <img src="sam_control.png" style="max-width:100%;height:auto;">
+            </div>
+          `,
+                name: "sam_control",
+                labels: ["1", "2", "3", "4", "5"],
+                required: true
+            },
+            {
+                // attention check：用 1–5
+                prompt: "To show that you are paying attention, please select ‘4’ for this item.",
+                name: "attention_check_1to5",
+                labels: [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5"
+                ],
+                required: true
+            }
+        ];
+
+        // 2) 只有 active 时插入 habit 题，位置放在 SAM 三题的前面
+        if (CONDITION === 'active') {
+
+            // 找到 SAM valence 的 index
+            var sam_index = post_view_questions.findIndex(q => q.name === "sam_valence");
+
+            // 插入 habit 题在 SAM 之前
+            post_view_questions.splice(sam_index, 0, {
+                prompt: "I felt I was continuing out of habit rather than deliberate choice.",
+                name: "habit_vs_deliberate",
+                labels: LIKERT_5,
+                required: true
+            });
+        }
+
+
+        // 3) 用这个数组生成 survey-likert trial
+        var post_view_likert_trial = {
+            type: 'survey-likert',
+            preamble: `
     <div style="padding:10px 5px 0 5px;">
       <p style="font-size:18px; text-align:left;">
         You have finished watching the video feed.<br><br>
@@ -417,81 +514,9 @@ function makeActiveVideoTrial(index, videoFile) {
       </p>
     </div>
   `,
-      questions: [
-        {
-          prompt: "I felt that I was in control of when the next video appeared.",
-          name: "agency_control",
-          labels: LIKERT_5,
-          required: true
-        },
-        {
-          prompt: "It felt like the system decided when to move to the next video, not me.",
-          name: "agency_system",
-          labels: LIKERT_5,
-          required: true
-        },
-        {
-          prompt: "I felt I was continuing out of habit rather than deliberate choice.",
-          name: "habit_vs_deliberate",
-          labels: LIKERT_5,
-          required: true
-        },
-        {
-          prompt: "If the task had not ended, I would probably have kept going for quite a while.",
-          name: "continue_watching",
-          labels: LIKERT_5,
-          required: true
-        },
-        {
-          prompt: "I found the videos interesting to watch.",
-          name: "interest",
-          labels: LIKERT_5,
-          required: true
-        },
-        {
-          prompt: "I found the videos boring.",
-          name: "boredom",
-          labels: LIKERT_5,
-          required: true
-        },
-        {
-          prompt: `
-            <div style="text-align:left;">
-              <p>Please indicate how you felt overall while watching the videos (valence).</p>
-              <img src="sam_valence.png" style="max-width:100%;height:auto;">
-            </div>
-          `,
-          name: "sam_valence",
-          labels: ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
-          required: true
-        },
-        {
-          prompt: `
-            <div style="text-align:left;">
-              <p>Please indicate how aroused or stimulated you felt overall.</p>
-              <img src="sam_arousal.png" style="max-width:100%;height:auto;">
-            </div>
-          `,
-          name: "sam_arousal",
-          labels: ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
-          required: true
-        },
-        {
-          // attention check：用 1–5
-          prompt: "To show that you are paying attention, please select ‘4’ for this item.",
-          name: "attention_check_1to5",
-          labels: [
-            "1",
-            "2",
-            "3",
-            "4",
-            "5"
-          ],
-          required: true
-        }
-      ],
-      randomize_question_order: false
-    };
+            questions: post_view_questions,
+            randomize_question_order: false
+        };
 
 
     /************* Measures 2：Recognition memory（示例：一页 4 张图） *************/
