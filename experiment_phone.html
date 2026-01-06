@@ -14,6 +14,8 @@
     <script src="https://unpkg.com/jspsych@6.3.1/plugins/jspsych-survey-likert.js"></script>
     <script src="https://unpkg.com/jspsych@6.3.1/plugins/jspsych-survey-multi-choice.js"></script>
     <script src="https://unpkg.com/jspsych@6.3.1/plugins/jspsych-survey-multi-select.js"></script>
+    <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
+    <script src="https://lib.pavlovia.org/jspsych-pavlovia-2020.2.js"></script>
 
 
     <style>
@@ -154,6 +156,13 @@
 
         var CONDITION = getUrlParam('cond', 'active');  // 'active' | 'ps' | 'pn'
         var TRACE_ID = getUrlParam('trace', '1');      // yoke trace id，给 ps / pn 用
+        var ON_PAVLOVIA = window.location.hostname.indexOf('pavlovia.org') !== -1;
+        var PARTICIPANT_ID = getUrlParam('participant', jsPsych.randomization.randomID(10));
+        
+        function pavloviaErrorHandler(err) {
+            // Quietly log Pavlovia errors to console; no popup to participants
+            console.error('[pavlovia error]', err);
+        }
 
         /************* 通用量表标签 *************/
         var LIKERT_5 = [
@@ -176,7 +185,7 @@
 
         /************* Yoke traces：示例，之后请用 active dwellTimes 来替换 *************/
         var YOKED_TRACES = {
-            "1": [3000, 4500, 4000, 3500, 5000]  // 单位：ms
+            "1": [10000, 12000, 20000, 15000, 18000]  // 单位：ms
             // 后续可以添加 "2": [...], "3": [...] 等
         };
 
@@ -245,6 +254,26 @@
 
         /************* 初始化 timeline *************/
         var timeline = [];
+
+        // 把参与者信息写入数据
+        jsPsych.data.addProperties({
+            participant: PARTICIPANT_ID,
+            condition: CONDITION,
+            trace_id: TRACE_ID
+        });
+
+        /************* Pavlovia 初始化（仅在 pavlovia.org 环境） *************/
+        var HAS_PAVLOVIA_PLUGIN = !!jsPsych.plugins['pavlovia'];
+        if (ON_PAVLOVIA && HAS_PAVLOVIA_PLUGIN) {
+            timeline.push({
+                type: 'pavlovia',
+                command: 'init',
+                participantId: PARTICIPANT_ID,
+                errorCallback: pavloviaErrorHandler
+            });
+        } else if (!HAS_PAVLOVIA_PLUGIN) {
+            console.warn('Pavlovia plugin not loaded; experiment will run without online save.');
+        }
 
         /************* 新增：预加载所有视频（带进度条） *************/
         var preload_trial = {
@@ -444,10 +473,15 @@
                 var actionScreen = document.getElementById('action-screen');
 
                 var currentIndex = -1;
-                var currentStartTime = null;
+                // 内容停留：playing -> 视频隐藏（进入黑屏提示）
+                var contentStartTime = null;
+                var contentEndTime = null;
+                var realViewEndTime = null;
+                var currentViewTime = null;      // 本 trial 的真实 view 时长
+                var contentDwellTimes = [];
                 var dwellTimes = [];
                 var viewTimes = []; // view 阶段（Tₐ）的时长
-                var actionRTs = []; // 从 Tₐ 到 swipe 的时间
+                var actionRTs = []; // 从黑屏出现到 swipe 的时间
                 var swipeRemover = null;
                 var inTransition = false;
                 var phase = 'start';  // 'start' | 'view' | 'action'
@@ -460,14 +494,37 @@
                 function startVideo(i) {
                     if (i < 0 || i >= N_VIDEOS) return;
                     currentIndex = i;
-                    currentStartTime = null;      // 用 onplaying 记录
+                    contentStartTime = null;      // 用 onplaying 记录
+                    contentEndTime = null;
+                    realViewEndTime = null;
+                    currentViewTime = null;
                     phase = 'view';
                     inTransition = false;
                     actionStartTime = null;
+                    targetDwell = yokedDurations[i];
 
                     // 视频真正开始播放时记录起点
                     video.onplaying = function () {
-                        currentStartTime = performance.now();
+                        contentStartTime = performance.now();
+                        contentEndTime = contentStartTime + targetDwell;
+
+                        if (tTimeoutId) clearTimeout(tTimeoutId);
+                        tTimeoutId = setTimeout(function () {
+                            phase = 'action';
+
+                            // 👉 真实 view 结束时间点（黑屏出现时间）
+                            realViewEndTime = performance.now();
+                            currentViewTime = (contentStartTime !== null)
+                                ? (realViewEndTime - contentStartTime)
+                                : null;
+
+                            // actionRT 的起点 = 真实 view 结束时间
+                            actionStartTime = realViewEndTime;
+
+                            try { video.pause(); } catch (e) { }
+                            video.style.display = 'none';
+                            actionScreen.style.display = 'flex';
+                        }, targetDwell);
                     };
 
                     video.src = VIDEO_SEQUENCE[i];
@@ -475,26 +532,13 @@
                     video.currentTime = 0;
                     actionScreen.style.display = 'none';
 
-                    var targetDwell = yokedDurations[i]; // Tₐ
-
                     var p = video.play();
                     if (p && p.catch) {
                         p.catch(function (err) {
                             console.log('play() 被拦截 (ps, index ' + i + '):', err);
                         });
                     }
-
-                    if (tTimeoutId) clearTimeout(tTimeoutId);
-                    tTimeoutId = setTimeout(function () {
-                        phase = 'action';
-                        actionStartTime = performance.now();
-
-                        try { video.pause(); } catch (e) { }
-                        video.style.display = 'none';
-                        actionScreen.style.display = 'flex';
-                    }, targetDwell);
                 }
-
 
                 function goToNextVideoFromAction() {
                     if (inTransition) return;
@@ -503,12 +547,27 @@
                     inTransition = true;
 
                     var now = performance.now();
-                    var totalDwell = now - currentStartTime;
-                    var viewDwell = yokedDurations[currentIndex];
-                    var actionRT = actionStartTime ? (now - actionStartTime) : null;
 
+                    // 总时长：从视频开始播放到这次 swipe
+                    var totalDwell = (contentStartTime !== null)
+                        ? (now - contentStartTime)
+                        : null;
+
+                    var contentDwell = (contentStartTime !== null && contentEndTime !== null)
+                        ? (contentEndTime - contentStartTime)
+                        : null;
+
+                    // 真实 view 时长（你要的 viewTime）
+                    var viewTime = currentViewTime;  // = realViewEndTime - contentStartTime
+
+                    // 黑屏出现到 swipe 的 RT
+                    var actionRT = (actionStartTime !== null)
+                        ? (now - actionStartTime)
+                        : null;
+
+                    contentDwellTimes.push(contentDwell);
+                    viewTimes.push(viewTime);
                     dwellTimes.push(totalDwell);
-                    viewTimes.push(viewDwell);
                     actionRTs.push(actionRT);
 
                     if (tTimeoutId) {
@@ -528,9 +587,10 @@
                                 video_index: k,
                                 video_file: VIDEO_SEQUENCE[k],
                                 target_dwell_ms: yokedDurations[k],
+                                content_dwell_ms: contentDwellTimes[k],
                                 total_dwell_ms: dwellTimes[k],
                                 view_dwell_ms: viewTimes[k],
-                                action_rt_ms: actionRTs[k]
+                                rt_black_screen_ms: actionRTs[k]
                             });
                         }
 
@@ -538,9 +598,10 @@
                             condition: 'passive_swipe',
                             trace_id: TRACE_ID,
                             n_videos: N_VIDEOS,
+                            content_dwell_times_ms: contentDwellTimes,
                             dwell_times_ms: dwellTimes,
                             view_times_ms: viewTimes,
-                            action_rts_ms: actionRTs,
+                            rt_black_screen_ms: actionRTs,
                             video_sequence_used: VIDEO_SEQUENCE
                         });
                     }
@@ -597,9 +658,13 @@
                 var video = document.getElementById('main-video');
 
                 var currentIndex = -1;
-                var currentStartTime = null;
+                // 内容停留：playing -> 视频被隐藏/暂停
+                var contentStartTime = null;
+                var contentEndTime = null;
+                var contentDwellTimes = [];
                 var dwellTimes = [];
                 var tTimeoutId = null;
+                var currentTargetDwell = null;
 
                 video.muted = false;
                 video.volume = 1.0;
@@ -607,11 +672,22 @@
                 function startVideo(i) {
                     if (i < 0 || i >= N_VIDEOS) return;
                     currentIndex = i;
-                    currentStartTime = null;   // 等 onplaying
+                    contentStartTime = null;   // 等 onplaying
+                    contentEndTime = null;
+                    currentTargetDwell = yokedDurations[i];
 
                     // 真正开始播放时记录
                     video.onplaying = function () {
-                        currentStartTime = performance.now();
+                        contentStartTime = performance.now();
+
+                        if (tTimeoutId) clearTimeout(tTimeoutId);
+                        tTimeoutId = setTimeout(function () {
+                            // 结束时间按 contentStartTime + 预设 dwell（避免计入定时器抖动）
+                            contentEndTime = (contentStartTime !== null)
+                                ? (contentStartTime + currentTargetDwell)
+                                : performance.now();
+                            goToNextVideoAuto();
+                        }, currentTargetDwell);
                     };
 
                     video.src = VIDEO_SEQUENCE[i];
@@ -624,20 +700,18 @@
                             console.log('play() 被拦截 (pn, index ' + i + '):', err);
                         });
                     }
-
-                    var targetDwell = yokedDurations[i];
-
-                    if (tTimeoutId) clearTimeout(tTimeoutId);
-                    tTimeoutId = setTimeout(function () {
-                        goToNextVideoAuto();
-                    }, targetDwell);
                 }
 
 
                 function goToNextVideoAuto() {
                     var now = performance.now();
-                    var dwell = now - currentStartTime;
-                    dwellTimes.push(dwell);
+                    var contentDwell = (contentStartTime !== null && contentEndTime !== null)
+                        ? (contentEndTime - contentStartTime)
+                        : null;
+                    // 先按实际测得的 now - start，再调整到 target_dwell（pn 要求严格等于 target）
+                    var measuredDwell = (contentStartTime !== null) ? (now - contentStartTime) : currentTargetDwell;
+                    dwellTimes.push(measuredDwell);
+                    contentDwellTimes.push(contentDwell);
 
                     try { video.pause(); } catch (e) { }
 
@@ -656,6 +730,7 @@
                                 video_index: k,
                                 video_file: VIDEO_SEQUENCE[k],
                                 target_dwell_ms: yokedDurations[k],
+                                content_dwell_ms: contentDwellTimes[k],
                                 dwell_ms: dwellTimes[k]
                             });
                         }
@@ -664,6 +739,7 @@
                             condition: 'passive_non_swipe',
                             trace_id: TRACE_ID,
                             n_videos: N_VIDEOS,
+                            content_dwell_times_ms: contentDwellTimes,
                             dwell_times_ms: dwellTimes,
                             video_sequence_used: VIDEO_SEQUENCE
                         });
@@ -1028,7 +1104,23 @@
                     required: true
                 };
             }),
-            randomize_question_order: false
+            randomize_question_order: false,
+            on_load: function () {
+                // 确保进入该页时视口回到顶部，避免从中间开始显示
+                var scrollTop = function () {
+                    window.scrollTo(0, 0);
+                    document.body.scrollTop = 0;
+                    document.documentElement.scrollTop = 0;
+                    var wrap = document.querySelector('.jspsych-content-wrapper');
+                    if (wrap) wrap.scrollTop = 0;
+                    var display = document.querySelector('.jspsych-display-element');
+                    if (display) display.scrollTop = 0;
+                };
+                requestAnimationFrame(function () {
+                    scrollTop();
+                    setTimeout(scrollTop, 50); // 再次拉回顶部，确保渲染完成后也在顶部
+                });
+            }
         };
 
 
@@ -1059,40 +1151,46 @@
           Thank you for your participation!
         </p>
         <p class="center-text" style="font-size:14px;opacity:0.8;margin-top:10px;">
-          Click the button below to download your data.
-        </p>
-        <button id="download-btn"
-                style="margin-top:20px;padding:10px 20px;font-size:16px;border-radius:8px;border:none;cursor:pointer;">
-          Download Data (CSV)
-        </button>
-        <p class="center-text" style="font-size:12px;opacity:0.6;margin-top:15px;">
-          After downloading, you may close this page.
+          ${ON_PAVLOVIA ? 'Uploading to Pavlovia…<br>Please keep this page open.' : 'You may now close this page.'}
         </p>
       </div>
     </div>
   `,
             choices: jsPsych.NO_KEYS,
-            on_load: function () {
-                var btn = document.getElementById('download-btn');
-                btn.addEventListener('click', function () {
-                    // 在“真实的用户点击”里触发下载，浏览器一般不会拦截
-                    jsPsych.data.get().localSave(
-                        'csv',
-                        'swipe_' + CONDITION + '_trace' + TRACE_ID + '.csv'
-                    );
-                });
-            }
+            trial_duration: 1500
         };
         timeline.push(end_trial);
+
+        /************* Pavlovia 结束并上传数据（仅在 pavlovia.org） *************/
+        if (ON_PAVLOVIA && HAS_PAVLOVIA_PLUGIN) {
+            timeline.push({
+                type: 'pavlovia',
+                command: 'finish',
+                participantId: PARTICIPANT_ID,
+                sync: true, // use Beacon API if available
+                errorCallback: pavloviaErrorHandler
+            });
+            timeline.push({
+                type: 'html-keyboard-response',
+                stimulus: `
+    <div class="video-container">
+      <div style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;">
+        <p class="center-text" style="font-size:22px;">
+          Upload complete. You may now close this page.
+        </p>
+      </div>
+    </div>
+  `,
+                choices: jsPsych.NO_KEYS,
+                trial_duration: 1500
+            });
+        }
 
 
         /************* 启动 jsPsych *************/
         jsPsych.init({
             display_element: 'jspsych-target',
-            timeline: timeline,
-            on_finish: function () {
-                jsPsych.data.get().localSave('csv', 'swipe_' + CONDITION + '_trace' + TRACE_ID + '.csv');
-            }
+            timeline: timeline
         });
     </script>
 
