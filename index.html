@@ -189,6 +189,7 @@
         var FIRST_BATCH = 6;              // warm up cache for the first N videos before starting
         var FETCH_TIMEOUT_MS = 20000;     // per-video fetch timeout
         var FETCH_RETRIES = 2;
+        var MEM_BLOB_MAX = 10;          // 内存里最多保留多少个 blobURL（建议 8-12；60 条不要全放内存）
 
         var memBlobUrl = new Map();       // url -> blobURL
         var memQueue = [];                // insertion order for eviction
@@ -244,13 +245,25 @@
             memBlobUrl.set(url, bUrl);
             memQueue.push(url);
 
-            while (memQueue.length > MEM_AHEAD_K) {
+            while (memQueue.length > MEM_BLOB_MAX) {
                 var old = memQueue.shift();
                 var oldB = memBlobUrl.get(old);
                 if (oldB) URL.revokeObjectURL(oldB);
                 memBlobUrl.delete(old);
             }
             return bUrl;
+        }
+
+        async function cachePutAndBlob(url) {
+            // 1) 先确保进 CacheStorage（网络层）
+            var ok = await cachePut(url);
+            if (!ok) return false;
+
+            // 2) 再把 CacheStorage 里的 response 转成 blobURL 放进内存（CPU/内存层）
+            try {
+                await cacheGetBlobUrl(url);
+            } catch (e) { }
+            return true;
         }
 
         async function warmupCache(urls) {
@@ -262,7 +275,14 @@
         function scheduleBackgroundPrefetch(startIndex, urls) {
             (async function () {
                 for (var i = startIndex; i < urls.length; i++) {
+                    // ✅ 改动2：后台预取同时生成 blobURL（但要“限量”，避免 60 条全进内存）
                     await cachePut(urls[i]);
+
+                    // 只对“较早的一段”做 blob 预热；后面只做 CacheStorage，避免内存爆
+                    // 你可以把这个阈值调大一点，比如 FIRST_BATCH + 12
+                    if (i < FIRST_BATCH + 12) {
+                        try { await cacheGetBlobUrl(urls[i]); } catch (e) { }
+                    }
                 }
             })();
         }
@@ -500,8 +520,19 @@
             on_load: function () {
                 (async function () {
                     var first = VIDEO_SEQUENCE.slice(0, Math.min(FIRST_BATCH, VIDEO_SEQUENCE.length));
+
+                    // 先把前 FIRST_BATCH 条放进 CacheStorage
                     await warmupCache(first);
+
+                    // ✅ 改动1：首条（以及可选前2条）提前生成 blobURL，避免第一个视频播放时才 blob() 卡顿
+                    if (first.length > 0) {
+                        await cachePutAndBlob(first[0]);               // 第1条最关键
+                        if (first.length > 1) await cachePutAndBlob(first[1]);  // 可选：第2条也一起预热
+                    }
+
+                    // 后台继续预取剩下的
                     scheduleBackgroundPrefetch(first.length, VIDEO_SEQUENCE);
+
                     jsPsych.finishTrial();
                 })();
             }
@@ -594,7 +625,7 @@
 
                     // warm next K in background
                     for (var j = i + 1; j <= i + MEM_AHEAD_K; j++) {
-                        if (j < N_VIDEOS) cachePut(VIDEO_SEQUENCE[j]);
+                        if (j < N_VIDEOS) cachePutAndBlob(VIDEO_SEQUENCE[j]);
                     }
                 }
 
@@ -785,7 +816,7 @@
                     }
 
                     for (var j = i + 1; j <= i + MEM_AHEAD_K; j++) {
-                        if (j < N_VIDEOS) cachePut(VIDEO_SEQUENCE[j]);
+                        if (j < N_VIDEOS) cachePutAndBlob(VIDEO_SEQUENCE[j]);
                     }
                 }
 
@@ -976,7 +1007,7 @@
                     }
 
                     for (var j = i + 1; j <= i + MEM_AHEAD_K; j++) {
-                        if (j < N_VIDEOS) cachePut(VIDEO_SEQUENCE[j]);
+                        if (j < N_VIDEOS) cachePutAndBlob(VIDEO_SEQUENCE[j]);
                     }
                 }
 
