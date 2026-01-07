@@ -357,7 +357,7 @@
 
         /************* Yoke traces：示例，之后请用 active dwellTimes 来替换 *************/
         var YOKED_TRACES = {
-            "1": [10000, 12000, 20000, 15000, 18000, 10000, 9000]  // 单位：ms
+            "1": [10000, 12000, 20000, 15000, 18000, 14000, 16000]  // 单位：ms
             // 后续可以添加 "2": [...], "3": [...] 等
         };
 
@@ -542,6 +542,7 @@
                 var endTypes = [];
                 var swipeRemover = null;
                 var inTransition = false;
+                var firstPlaybackDone = false;
 
                 video.muted = false;
                 video.volume = 1.0;
@@ -570,7 +571,26 @@
                     video.style.display = 'block';
                     video.currentTime = 0;
 
-                    await setSrcAndPlay(video, VIDEO_SEQUENCE[i], { allowFallbackToUrl: true });
+                    if (!firstPlaybackDone) {
+                        // 第一次播放：必须“同步触发 play()”，不能被 await 断开
+                        video.preload = 'auto';
+                        video.playsInline = true;
+
+                        video.src = VIDEO_SEQUENCE[i];
+                        try { video.load(); } catch (e) { }
+
+                        var p0 = video.play();
+                        if (p0 && p0.catch) {
+                            p0.catch(function (err) {
+                                console.log('First play() blocked (index ' + i + '):', err);
+                            });
+                        }
+
+                        firstPlaybackDone = true;
+                    } else {
+                        // 后续播放：继续用你的缓存/容错逻辑（解决卡顿的关键）
+                        await setSrcAndPlay(video, VIDEO_SEQUENCE[i], { allowFallbackToUrl: true });
+                    }
 
                     // warm next K in background
                     for (var j = i + 1; j <= i + MEM_AHEAD_K; j++) {
@@ -693,6 +713,7 @@
                 var phase = 'start';  // 'start' | 'view' | 'action'
                 var actionStartTime = null;
                 var tTimeoutId = null;     // Tₐ 定时器
+                var firstPlaybackDone = false;
 
                 video.muted = false;
                 video.volume = 1.0;
@@ -742,7 +763,26 @@
                     video.style.display = 'block';
                     video.currentTime = 0;
 
-                    await setSrcAndPlay(video, VIDEO_SEQUENCE[i], { allowFallbackToUrl: true });
+                    if (!firstPlaybackDone) {
+                        // 第一次播放：必须“同步触发 play()”，不能被 await 断开
+                        video.preload = 'auto';
+                        video.playsInline = true;
+
+                        video.src = VIDEO_SEQUENCE[i];
+                        try { video.load(); } catch (e) { }
+
+                        var p0 = video.play();
+                        if (p0 && p0.catch) {
+                            p0.catch(function (err) {
+                                console.log('First play() blocked (index ' + i + '):', err);
+                            });
+                        }
+
+                        firstPlaybackDone = true;
+                    } else {
+                        // 后续播放：继续用你的缓存/容错逻辑（解决卡顿的关键）
+                        await setSrcAndPlay(video, VIDEO_SEQUENCE[i], { allowFallbackToUrl: true });
+                    }
 
                     for (var j = i + 1; j <= i + MEM_AHEAD_K; j++) {
                         if (j < N_VIDEOS) cachePut(VIDEO_SEQUENCE[j]);
@@ -874,6 +914,7 @@
                 var dwellTimes = [];
                 var tTimeoutId = null;
                 var currentTargetDwell = null;
+                var firstPlaybackDone = false;
 
                 video.muted = false;
                 video.volume = 1.0;
@@ -913,7 +954,26 @@
                     video.style.display = 'block';
                     video.currentTime = 0;
 
-                    await setSrcAndPlay(video, VIDEO_SEQUENCE[i], { allowFallbackToUrl: true });
+                    if (!firstPlaybackDone) {
+                        // 第一次播放：必须“同步触发 play()”，不能被 await 断开
+                        video.preload = 'auto';
+                        video.playsInline = true;
+
+                        video.src = VIDEO_SEQUENCE[i];
+                        try { video.load(); } catch (e) { }
+
+                        var p0 = video.play();
+                        if (p0 && p0.catch) {
+                            p0.catch(function (err) {
+                                console.log('First play() blocked (index ' + i + '):', err);
+                            });
+                        }
+
+                        firstPlaybackDone = true;
+                    } else {
+                        // 后续播放：继续用你的缓存/容错逻辑（解决卡顿的关键）
+                        await setSrcAndPlay(video, VIDEO_SEQUENCE[i], { allowFallbackToUrl: true });
+                    }
 
                     for (var j = i + 1; j <= i + MEM_AHEAD_K; j++) {
                         if (j < N_VIDEOS) cachePut(VIDEO_SEQUENCE[j]);
