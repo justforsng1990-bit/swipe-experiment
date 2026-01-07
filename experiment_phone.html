@@ -158,7 +158,7 @@
         var TRACE_ID = getUrlParam('trace', '1');      // yoke trace id，给 ps / pn 用
         var ON_PAVLOVIA = window.location.hostname.indexOf('pavlovia.org') !== -1;
         var PARTICIPANT_ID = getUrlParam('participant', jsPsych.randomization.randomID(10));
-        
+
         function pavloviaErrorHandler(err) {
             // Quietly log Pavlovia errors to console; no popup to participants
             console.error('[pavlovia error]', err);
@@ -174,14 +174,186 @@
         ];
 
         /************* 视频序列 *************/
-        var VIDEO_SEQUENCE = [
-            'video1.mp4',
-            'video2.mp4',
-            'video3.mp4',
-            'video4.mp4',
-            'video5.mp4'
-        ];
+        var VIDEO_SEQUENCE = Array.from(
+            { length: 8 },
+            (_, i) => `video${i + 1}.mp4`
+        );
         var N_VIDEOS = VIDEO_SEQUENCE.length;
+
+        /*********************
+         * Robust video caching (CacheStorage + in-memory blob URLs) + stall recovery
+         * Goal: reduce playback stutter under unstable networks (mobile-friendly)
+         *********************/
+        var VIDEO_CACHE_NAME = 'sfv-video-cache-v1';
+        var MEM_AHEAD_K = 4;              // keep next K videos as in-memory blob URLs (3-6 recommended)
+        var FIRST_BATCH = 6;              // warm up cache for the first N videos before starting
+        var FETCH_TIMEOUT_MS = 20000;     // per-video fetch timeout
+        var FETCH_RETRIES = 2;
+
+        var memBlobUrl = new Map();       // url -> blobURL
+        var memQueue = [];                // insertion order for eviction
+
+        function isCacheStorageAvailable() {
+            return (typeof caches !== 'undefined');
+        }
+
+        async function fetchWithTimeout(url, timeoutMs) {
+            var controller = new AbortController();
+            var t = setTimeout(function () { controller.abort(); }, timeoutMs);
+            try {
+                var resp = await fetch(url, { signal: controller.signal, cache: 'no-store' });
+                return resp;
+            } finally {
+                clearTimeout(t);
+            }
+        }
+
+        async function cachePut(url) {
+            if (!isCacheStorageAvailable()) return false;
+
+            var cache = await caches.open(VIDEO_CACHE_NAME);
+            var hit = await cache.match(url);
+            if (hit) return true;
+
+            for (var attempt = 0; attempt <= FETCH_RETRIES; attempt++) {
+                try {
+                    var resp = await fetchWithTimeout(url, FETCH_TIMEOUT_MS);
+                    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                    await cache.put(url, resp.clone());
+                    return true;
+                } catch (e) {
+                    if (attempt === FETCH_RETRIES) return false;
+                    await new Promise(function (r) { setTimeout(r, 500 * (attempt + 1)); });
+                }
+            }
+            return false;
+        }
+
+        async function cacheGetBlobUrl(url) {
+            if (memBlobUrl.has(url)) return memBlobUrl.get(url);
+
+            if (!isCacheStorageAvailable()) return null;
+
+            var cache = await caches.open(VIDEO_CACHE_NAME);
+            var resp = await cache.match(url);
+            if (!resp) return null;
+
+            var blob = await resp.blob();
+            var bUrl = URL.createObjectURL(blob);
+
+            memBlobUrl.set(url, bUrl);
+            memQueue.push(url);
+
+            while (memQueue.length > MEM_AHEAD_K) {
+                var old = memQueue.shift();
+                var oldB = memBlobUrl.get(old);
+                if (oldB) URL.revokeObjectURL(oldB);
+                memBlobUrl.delete(old);
+            }
+            return bUrl;
+        }
+
+        async function warmupCache(urls) {
+            for (var i = 0; i < urls.length; i++) {
+                await cachePut(urls[i]);
+            }
+        }
+
+        function scheduleBackgroundPrefetch(startIndex, urls) {
+            (async function () {
+                for (var i = startIndex; i < urls.length; i++) {
+                    await cachePut(urls[i]);
+                }
+            })();
+        }
+
+        async function setSrcAndPlay(videoEl, url, opts) {
+            opts = opts || {};
+            var allowFallbackToUrl = (opts.allowFallbackToUrl !== false);
+
+            var chosenSrc = url;
+            try {
+                var bUrl = await cacheGetBlobUrl(url);
+                if (bUrl) chosenSrc = bUrl;
+            } catch (e) { }
+
+            videoEl.preload = 'auto';
+            videoEl.playsInline = true;
+
+            videoEl.src = chosenSrc;
+            try { videoEl.load(); } catch (e2) { }
+
+            // gate: wait for canplay (canplaythrough can be unreliable on mobile)
+            await new Promise(function (resolve) {
+                var done = false;
+                function cleanup() {
+                    videoEl.removeEventListener('canplay', onOk);
+                    videoEl.removeEventListener('error', onErr);
+                }
+                function onOk() {
+                    if (done) return;
+                    done = true;
+                    cleanup();
+                    resolve();
+                }
+                function onErr() {
+                    if (done) return;
+                    done = true;
+                    cleanup();
+                    resolve();
+                }
+                videoEl.addEventListener('canplay', onOk, { once: true });
+                videoEl.addEventListener('error', onErr, { once: true });
+                setTimeout(onOk, 2000); // avoid waiting forever
+            });
+
+            try {
+                var p = videoEl.play();
+                if (p && p.catch) await p.catch(function () { });
+            } catch (e3) {
+                if (allowFallbackToUrl && chosenSrc !== url) {
+                    videoEl.src = url;
+                    try { videoEl.load(); } catch (e4) { }
+                    try { await videoEl.play(); } catch (e5) { }
+                }
+            }
+        }
+
+        function installStallRecovery(videoEl, getCurrentUrl, addDataFn) {
+            var stallTimer = null;
+            var stallCount = 0;
+
+            function clearStall() {
+                if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
+            }
+
+            function onWaiting() {
+                clearStall();
+                stallTimer = setTimeout(async function () {
+                    stallCount += 1;
+                    try {
+                        var url = getCurrentUrl();
+                        await setSrcAndPlay(videoEl, url, { allowFallbackToUrl: true });
+                    } catch (e) { }
+                    try {
+                        if (addDataFn) addDataFn(stallCount);
+                    } catch (e2) { }
+                }, 1500);
+            }
+
+            videoEl.addEventListener('waiting', onWaiting);
+            videoEl.addEventListener('stalled', onWaiting);
+            videoEl.addEventListener('playing', clearStall);
+            videoEl.addEventListener('timeupdate', clearStall);
+
+            return function removeRecovery() {
+                clearStall();
+                videoEl.removeEventListener('waiting', onWaiting);
+                videoEl.removeEventListener('stalled', onWaiting);
+                videoEl.removeEventListener('playing', clearStall);
+                videoEl.removeEventListener('timeupdate', clearStall);
+            };
+        }
 
         /************* Yoke traces：示例，之后请用 active dwellTimes 来替换 *************/
         var YOKED_TRACES = {
@@ -312,6 +484,31 @@
         };
         timeline.push(unlock_trial);
 
+
+        /************* NEW: Warm up CacheStorage before starting the feed (network-robust) *************/
+        var prepare_cache_trial = {
+            type: 'html-keyboard-response',
+            stimulus: `
+      <div style="height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;color:white;padding:20px;box-sizing:border-box;">
+        <p style="font-size:20px;text-align:center;">Preparing videos…</p>
+        <p style="font-size:14px;opacity:0.8;text-align:center;margin-top:10px;">
+          Please keep this page open.
+        </p>
+      </div>
+    `,
+            choices: jsPsych.NO_KEYS,
+            on_load: function () {
+                (async function () {
+                    var first = VIDEO_SEQUENCE.slice(0, Math.min(FIRST_BATCH, VIDEO_SEQUENCE.length));
+                    await warmupCache(first);
+                    scheduleBackgroundPrefetch(first.length, VIDEO_SEQUENCE);
+                    jsPsych.finishTrial();
+                })();
+            }
+        };
+        timeline.push(prepare_cache_trial);
+
+
         /************* ACTIVE：单 trial 播整条视频流（上滑切 + 播完自动切） *************/
         var active_swipe_trial = {
             type: 'html-keyboard-response',
@@ -349,26 +546,35 @@
                 video.muted = false;
                 video.volume = 1.0;
 
-                function startVideo(i) {
+                async function startVideo(i) {
                     if (i < 0 || i >= N_VIDEOS) return;
                     currentIndex = i;
-                    currentStartTime = null;      // 先清空
+                    currentStartTime = null;      // clear
                     inTransition = false;
 
-                    // 真正开始播放时再记录 time 0
+                    // record dwell start when playback actually begins
                     video.onplaying = function () {
                         currentStartTime = performance.now();
                     };
 
-                    video.src = VIDEO_SEQUENCE[i];
+                    // stall recovery (install once)
+                    if (!window.__sfv_active_recovery_installed) {
+                        window.__sfv_active_recovery_installed = true;
+                        installStallRecovery(
+                            video,
+                            function () { return VIDEO_SEQUENCE[currentIndex]; },
+                            function (n) { jsPsych.data.addDataToLastTrial({ stall_count: n }); }
+                        );
+                    }
+
                     video.style.display = 'block';
                     video.currentTime = 0;
 
-                    var p = video.play();
-                    if (p && p.catch) {
-                        p.catch(function (err) {
-                            console.log('play() 被拦截 (active, index ' + i + '):', err);
-                        });
+                    await setSrcAndPlay(video, VIDEO_SEQUENCE[i], { allowFallbackToUrl: true });
+
+                    // warm next K in background
+                    for (var j = i + 1; j <= i + MEM_AHEAD_K; j++) {
+                        if (j < N_VIDEOS) cachePut(VIDEO_SEQUENCE[j]);
                     }
                 }
 
@@ -491,10 +697,10 @@
                 video.muted = false;
                 video.volume = 1.0;
 
-                function startVideo(i) {
+                async function startVideo(i) {
                     if (i < 0 || i >= N_VIDEOS) return;
                     currentIndex = i;
-                    contentStartTime = null;      // 用 onplaying 记录
+                    contentStartTime = null;      // set onplaying
                     contentEndTime = null;
                     realViewEndTime = null;
                     currentViewTime = null;
@@ -503,7 +709,7 @@
                     actionStartTime = null;
                     targetDwell = yokedDurations[i];
 
-                    // 视频真正开始播放时记录起点
+                    // record start and schedule cutoff at yoked time
                     video.onplaying = function () {
                         contentStartTime = performance.now();
                         contentEndTime = contentStartTime + targetDwell;
@@ -512,31 +718,34 @@
                         tTimeoutId = setTimeout(function () {
                             phase = 'action';
 
-                            // 👉 真实 view 结束时间点（黑屏出现时间）
-                            realViewEndTime = performance.now();
-                            currentViewTime = (contentStartTime !== null)
-                                ? (realViewEndTime - contentStartTime)
-                                : null;
-
-                            // actionRT 的起点 = 真实 view 结束时间
-                            actionStartTime = realViewEndTime;
-
+                            // pause & hide video, show black action screen
                             try { video.pause(); } catch (e) { }
                             video.style.display = 'none';
                             actionScreen.style.display = 'flex';
+
+                            actionStartTime = performance.now();
                         }, targetDwell);
                     };
 
-                    video.src = VIDEO_SEQUENCE[i];
+                    // stall recovery (install once)
+                    if (!window.__sfv_ps_recovery_installed) {
+                        window.__sfv_ps_recovery_installed = true;
+                        installStallRecovery(
+                            video,
+                            function () { return VIDEO_SEQUENCE[currentIndex]; },
+                            function (n) { jsPsych.data.addDataToLastTrial({ stall_count: n }); }
+                        );
+                    }
+
+                    startScreen.style.display = 'none';
+                    actionScreen.style.display = 'none';
                     video.style.display = 'block';
                     video.currentTime = 0;
-                    actionScreen.style.display = 'none';
 
-                    var p = video.play();
-                    if (p && p.catch) {
-                        p.catch(function (err) {
-                            console.log('play() 被拦截 (ps, index ' + i + '):', err);
-                        });
+                    await setSrcAndPlay(video, VIDEO_SEQUENCE[i], { allowFallbackToUrl: true });
+
+                    for (var j = i + 1; j <= i + MEM_AHEAD_K; j++) {
+                        if (j < N_VIDEOS) cachePut(VIDEO_SEQUENCE[j]);
                     }
                 }
 
@@ -642,7 +851,7 @@
              style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;">
           <p class="center-text" style="font-size:22px;">
             You will now <b>passively watch</b> a series of videos.<br>
-            Please do not swipe or tap. The videos will advance automatically.
+            After playback starts, please do not swipe or tap. The videos will advance automatically.<br><br><b>Tap anywhere to start playback.</b>
           </p>
         </div>
         <video id="main-video"
@@ -669,20 +878,20 @@
                 video.muted = false;
                 video.volume = 1.0;
 
-                function startVideo(i) {
+                async function startVideo(i) {
                     if (i < 0 || i >= N_VIDEOS) return;
                     currentIndex = i;
-                    contentStartTime = null;   // 等 onplaying
+                    contentStartTime = null;   // wait for onplaying
                     contentEndTime = null;
                     currentTargetDwell = yokedDurations[i];
 
-                    // 真正开始播放时记录
+                    // start time + auto-advance at yoked dwell time
                     video.onplaying = function () {
                         contentStartTime = performance.now();
 
                         if (tTimeoutId) clearTimeout(tTimeoutId);
                         tTimeoutId = setTimeout(function () {
-                            // 结束时间按 contentStartTime + 预设 dwell（避免计入定时器抖动）
+                            // use contentStartTime + target dwell to avoid timer jitter
                             contentEndTime = (contentStartTime !== null)
                                 ? (contentStartTime + currentTargetDwell)
                                 : performance.now();
@@ -690,18 +899,26 @@
                         }, currentTargetDwell);
                     };
 
-                    video.src = VIDEO_SEQUENCE[i];
+                    // stall recovery (install once)
+                    if (!window.__sfv_pn_recovery_installed) {
+                        window.__sfv_pn_recovery_installed = true;
+                        installStallRecovery(
+                            video,
+                            function () { return VIDEO_SEQUENCE[currentIndex]; },
+                            function (n) { jsPsych.data.addDataToLastTrial({ stall_count: n }); }
+                        );
+                    }
+
+                    startScreen.style.display = 'none';
                     video.style.display = 'block';
                     video.currentTime = 0;
 
-                    var p = video.play();
-                    if (p && p.catch) {
-                        p.catch(function (err) {
-                            console.log('play() 被拦截 (pn, index ' + i + '):', err);
-                        });
+                    await setSrcAndPlay(video, VIDEO_SEQUENCE[i], { allowFallbackToUrl: true });
+
+                    for (var j = i + 1; j <= i + MEM_AHEAD_K; j++) {
+                        if (j < N_VIDEOS) cachePut(VIDEO_SEQUENCE[j]);
                     }
                 }
-
 
                 function goToNextVideoAuto() {
                     var now = performance.now();
@@ -748,10 +965,16 @@
 
                 // 不安装 swipe handler，完全忽略上滑
                 // 只在 start-screen 后自动开始
-                setTimeout(function () {
-                    startScreen.style.display = 'none';
+                // Start only after participant tap (required to unlock autoplay on mobile)
+                var __pn_started = false;
+                function __pn_tapToStart() {
+                    if (__pn_started) return;
+                    __pn_started = true;
+                    document.removeEventListener('click', __pn_tapToStart);
                     startVideo(0);
-                }, 1000); // 1 秒后开始，也可以改成点击触发
+                }
+                document.addEventListener('click', __pn_tapToStart);
+
 
                 video.onended = function () {
                     // 理论上不会依赖 onended，而是用 Tₐ；这里可以仅做日志
@@ -1195,5 +1418,7 @@
     </script>
 
 </body>
+
+</html>
 
 </html>
