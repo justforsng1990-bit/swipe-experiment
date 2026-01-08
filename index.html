@@ -180,204 +180,79 @@
         );
         var N_VIDEOS = VIDEO_SEQUENCE.length;
 
-        /*********************
-         * Robust video caching (CacheStorage + in-memory blob URLs) + stall recovery
-         * Goal: reduce playback stutter under unstable networks (mobile-friendly)
-         *********************/
-        var VIDEO_CACHE_NAME = 'sfv-video-cache-v1';
-        var MEM_AHEAD_K = 4;              // keep next K videos as in-memory blob URLs (3-6 recommended)
-        var FIRST_BATCH = 6;              // warm up cache for the first N videos before starting
-        var FETCH_TIMEOUT_MS = 20000;     // per-video fetch timeout
-        var FETCH_RETRIES = 2;
-        var MEM_BLOB_MAX = 10;          // 内存里最多保留多少个 blobURL（建议 8-12；60 条不要全放内存）
+        // ===== Buffering / startup tuning =====
+        // Only block on the first FIRST_BATCH videos; keep fetching the rest in the background.
+        var FIRST_BATCH = 6;
+        // Keep a look-ahead buffer of upcoming videos requested in the background.
+        var AHEAD_K = 10;
 
-        var memBlobUrl = new Map();       // url -> blobURL
-        var memQueue = [];                // insertion order for eviction
+        // Background prefetch (non-blocking): warms the browser's media cache using hidden <video> elements.
+        var PREFETCH_CONCURRENCY = 2;   // keep small to avoid competing with the currently playing video
+        var _prefetchQueue = [];
+        var _prefetchActive = 0;
+        var _prefetchInFlight = {};
+        var _prefetchDone = {};
 
-        function isCacheStorageAvailable() {
-            return (typeof caches !== 'undefined');
+        function _enqueuePrefetch(url) {
+            if (!url) return;
+            if (_prefetchDone[url] || _prefetchInFlight[url]) return;
+            _prefetchQueue.push(url);
+            _prefetchInFlight[url] = true;
+            _pumpPrefetch();
         }
 
-        async function fetchWithTimeout(url, timeoutMs) {
-            var controller = new AbortController();
-            var t = setTimeout(function () { controller.abort(); }, timeoutMs);
-            try {
-                var resp = await fetch(url, { signal: controller.signal, cache: 'no-store' });
-                return resp;
-            } finally {
-                clearTimeout(t);
-            }
-        }
+        function _pumpPrefetch() {
+            while (_prefetchActive < PREFETCH_CONCURRENCY && _prefetchQueue.length > 0) {
+                var url = _prefetchQueue.shift();
+                _prefetchActive++;
 
-        async function cachePut(url) {
-            if (!isCacheStorageAvailable()) return false;
+                (function (u) {
+                    var v = document.createElement('video');
+                    v.setAttribute('playsinline', '');
+                    v.playsInline = true;
+                    v.muted = true;
+                    v.preload = 'auto';
+                    v.style.position = 'fixed';
+                    v.style.left = '-9999px';
+                    v.style.top = '-9999px';
+                    v.style.width = '1px';
+                    v.style.height = '1px';
 
-            var cache = await caches.open(VIDEO_CACHE_NAME);
-            var hit = await cache.match(url);
-            if (hit) return true;
-
-            for (var attempt = 0; attempt <= FETCH_RETRIES; attempt++) {
-                try {
-                    var resp = await fetchWithTimeout(url, FETCH_TIMEOUT_MS);
-                    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-                    await cache.put(url, resp.clone());
-                    return true;
-                } catch (e) {
-                    if (attempt === FETCH_RETRIES) return false;
-                    await new Promise(function (r) { setTimeout(r, 500 * (attempt + 1)); });
-                }
-            }
-            return false;
-        }
-
-        async function cacheGetBlobUrl(url) {
-            if (memBlobUrl.has(url)) return memBlobUrl.get(url);
-
-            if (!isCacheStorageAvailable()) return null;
-
-            var cache = await caches.open(VIDEO_CACHE_NAME);
-            var resp = await cache.match(url);
-            if (!resp) return null;
-
-            var blob = await resp.blob();
-            var bUrl = URL.createObjectURL(blob);
-
-            memBlobUrl.set(url, bUrl);
-            memQueue.push(url);
-
-            while (memQueue.length > MEM_BLOB_MAX) {
-                var old = memQueue.shift();
-                var oldB = memBlobUrl.get(old);
-                if (oldB) URL.revokeObjectURL(oldB);
-                memBlobUrl.delete(old);
-            }
-            return bUrl;
-        }
-
-        async function cachePutAndBlob(url) {
-            // 1) 先确保进 CacheStorage（网络层）
-            var ok = await cachePut(url);
-            if (!ok) return false;
-
-            // 2) 再把 CacheStorage 里的 response 转成 blobURL 放进内存（CPU/内存层）
-            try {
-                await cacheGetBlobUrl(url);
-            } catch (e) { }
-            return true;
-        }
-
-        async function warmupCache(urls) {
-            for (var i = 0; i < urls.length; i++) {
-                await cachePut(urls[i]);
-            }
-        }
-
-        function scheduleBackgroundPrefetch(startIndex, urls) {
-            (async function () {
-                for (var i = startIndex; i < urls.length; i++) {
-                    // ✅ 改动2：后台预取同时生成 blobURL（但要“限量”，避免 60 条全进内存）
-                    await cachePut(urls[i]);
-
-                    // 只对“较早的一段”做 blob 预热；后面只做 CacheStorage，避免内存爆
-                    // 你可以把这个阈值调大一点，比如 FIRST_BATCH + 12
-                    if (i < FIRST_BATCH + 12) {
-                        try { await cacheGetBlobUrl(urls[i]); } catch (e) { }
+                    var settled = false;
+                    function cleanup() {
+                        if (settled) return;
+                        settled = true;
+                        try { v.pause(); } catch (e) { }
+                        try { v.removeAttribute('src'); v.load(); } catch (e2) { }
+                        try { document.body.removeChild(v); } catch (e3) { }
+                        _prefetchDone[u] = true;
+                        delete _prefetchInFlight[u];
+                        _prefetchActive--;
+                        _pumpPrefetch();
                     }
-                }
-            })();
-        }
 
-        async function setSrcAndPlay(videoEl, url, opts) {
-            opts = opts || {};
-            var allowFallbackToUrl = (opts.allowFallbackToUrl !== false);
+                    // Success as soon as we have decoded some frames / enough metadata for quick start.
+                    v.addEventListener('loadeddata', cleanup, { once: true });
+                    v.addEventListener('error', cleanup, { once: true });
 
-            var chosenSrc = url;
-            try {
-                var bUrl = await cacheGetBlobUrl(url);
-                if (bUrl) chosenSrc = bUrl;
-            } catch (e) { }
+                    // Hard timeout (don't stall the queue forever on weak networks).
+                    setTimeout(cleanup, 15000);
 
-            videoEl.preload = 'auto';
-            videoEl.playsInline = true;
-
-            videoEl.src = chosenSrc;
-            try { videoEl.load(); } catch (e2) { }
-
-            // gate: wait for canplay (canplaythrough can be unreliable on mobile)
-            await new Promise(function (resolve) {
-                var done = false;
-                function cleanup() {
-                    videoEl.removeEventListener('canplay', onOk);
-                    videoEl.removeEventListener('error', onErr);
-                }
-                function onOk() {
-                    if (done) return;
-                    done = true;
-                    cleanup();
-                    resolve();
-                }
-                function onErr() {
-                    if (done) return;
-                    done = true;
-                    cleanup();
-                    resolve();
-                }
-                videoEl.addEventListener('canplay', onOk, { once: true });
-                videoEl.addEventListener('error', onErr, { once: true });
-                setTimeout(onOk, 2000); // avoid waiting forever
-            });
-
-            try {
-                var p = videoEl.play();
-                if (p && p.catch) await p.catch(function () { });
-            } catch (e3) {
-                if (allowFallbackToUrl && chosenSrc !== url) {
-                    videoEl.src = url;
-                    try { videoEl.load(); } catch (e4) { }
-                    try { await videoEl.play(); } catch (e5) { }
-                }
+                    try { document.body.appendChild(v); } catch (e4) { }
+                    try { v.src = u; v.load(); } catch (e5) { cleanup(); }
+                })(url);
             }
         }
 
-        function installStallRecovery(videoEl, getCurrentUrl, addDataFn) {
-            var stallTimer = null;
-            var stallCount = 0;
-
-            function clearStall() {
-                if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
+        function ensureAheadBuffer(currentIndex) {
+            for (var j = currentIndex + 1; j <= currentIndex + AHEAD_K && j < N_VIDEOS; j++) {
+                _enqueuePrefetch(VIDEO_SEQUENCE[j]);
             }
-
-            function onWaiting() {
-                clearStall();
-                stallTimer = setTimeout(async function () {
-                    stallCount += 1;
-                    try {
-                        var url = getCurrentUrl();
-                        await setSrcAndPlay(videoEl, url, { allowFallbackToUrl: true });
-                    } catch (e) { }
-                    try {
-                        if (addDataFn) addDataFn(stallCount);
-                    } catch (e2) { }
-                }, 1500);
-            }
-
-            videoEl.addEventListener('waiting', onWaiting);
-            videoEl.addEventListener('stalled', onWaiting);
-            videoEl.addEventListener('playing', clearStall);
-            videoEl.addEventListener('timeupdate', clearStall);
-
-            return function removeRecovery() {
-                clearStall();
-                videoEl.removeEventListener('waiting', onWaiting);
-                videoEl.removeEventListener('stalled', onWaiting);
-                videoEl.removeEventListener('playing', clearStall);
-                videoEl.removeEventListener('timeupdate', clearStall);
-            };
         }
 
         /************* Yoke traces：示例，之后请用 active dwellTimes 来替换 *************/
         var YOKED_TRACES = {
-            "1": [10000, 12000, 20000, 15000, 18000, 14000, 16000]  // 单位：ms
+            "1": [10000, 12000, 20000, 15000, 18000]  // 单位：ms
             // 后续可以添加 "2": [...], "3": [...] 等
         };
 
@@ -467,15 +342,15 @@
             console.warn('Pavlovia plugin not loaded; experiment will run without online save.');
         }
 
-        /************* 新增：预加载所有视频（带进度条） *************/
+        /************* 预加载前 FIRST_BATCH 条视频（快启动） *************/
         var preload_trial = {
             type: 'preload',
-            video: VIDEO_SEQUENCE,               // 这里将来换成你60条视频的数组
+            video: VIDEO_SEQUENCE.slice(0, Math.min(FIRST_BATCH, N_VIDEOS)),  // 只阻塞前 6 条
             show_progress_bar: true,
-            message: 'Loading videos. Please wait…',
+            message: 'Loading first videos (fast start)…',
             error_message: 'Some videos failed to load, but the study will continue.',
-            continue_after_error: true,          // 万一某条加载失败，不整个卡死
-            max_load_time: 60000                // 最长等 60 秒（10 分钟），可按需要调整
+            continue_after_error: true,
+            max_load_time: 15000   // 15 秒超时即放行（弱网不至于卡死）
         };
         timeline.push(preload_trial);
 
@@ -503,42 +378,6 @@
             }
         };
         timeline.push(unlock_trial);
-
-
-        /************* NEW: Warm up CacheStorage before starting the feed (network-robust) *************/
-        var prepare_cache_trial = {
-            type: 'html-keyboard-response',
-            stimulus: `
-      <div style="height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;color:white;padding:20px;box-sizing:border-box;">
-        <p style="font-size:20px;text-align:center;">Preparing videos…</p>
-        <p style="font-size:14px;opacity:0.8;text-align:center;margin-top:10px;">
-          Please keep this page open.
-        </p>
-      </div>
-    `,
-            choices: jsPsych.NO_KEYS,
-            on_load: function () {
-                (async function () {
-                    var first = VIDEO_SEQUENCE.slice(0, Math.min(FIRST_BATCH, VIDEO_SEQUENCE.length));
-
-                    // 先把前 FIRST_BATCH 条放进 CacheStorage
-                    await warmupCache(first);
-
-                    // ✅ 改动1：首条（以及可选前2条）提前生成 blobURL，避免第一个视频播放时才 blob() 卡顿
-                    if (first.length > 0) {
-                        await cachePutAndBlob(first[0]);               // 第1条最关键
-                        if (first.length > 1) await cachePutAndBlob(first[1]);  // 可选：第2条也一起预热
-                    }
-
-                    // 后台继续预取剩下的
-                    scheduleBackgroundPrefetch(first.length, VIDEO_SEQUENCE);
-
-                    jsPsych.finishTrial();
-                })();
-            }
-        };
-        timeline.push(prepare_cache_trial);
-
 
         /************* ACTIVE：单 trial 播整条视频流（上滑切 + 播完自动切） *************/
         var active_swipe_trial = {
@@ -573,59 +412,31 @@
                 var endTypes = [];
                 var swipeRemover = null;
                 var inTransition = false;
-                var firstPlaybackDone = false;
 
                 video.muted = false;
                 video.volume = 1.0;
 
-                async function startVideo(i) {
+                function startVideo(i) {
                     if (i < 0 || i >= N_VIDEOS) return;
                     currentIndex = i;
-                    currentStartTime = null;      // clear
+                    ensureAheadBuffer(i);   // ✅ 新增：后台预取后面 10 条
+                    currentStartTime = null;      // 先清空
                     inTransition = false;
 
-                    // record dwell start when playback actually begins
+                    // 真正开始播放时再记录 time 0
                     video.onplaying = function () {
                         currentStartTime = performance.now();
                     };
 
-                    // stall recovery (install once)
-                    if (!window.__sfv_active_recovery_installed) {
-                        window.__sfv_active_recovery_installed = true;
-                        installStallRecovery(
-                            video,
-                            function () { return VIDEO_SEQUENCE[currentIndex]; },
-                            function (n) { jsPsych.data.addDataToLastTrial({ stall_count: n }); }
-                        );
-                    }
-
+                    video.src = VIDEO_SEQUENCE[i];
                     video.style.display = 'block';
                     video.currentTime = 0;
 
-                    if (!firstPlaybackDone) {
-                        // 第一次播放：必须“同步触发 play()”，不能被 await 断开
-                        video.preload = 'auto';
-                        video.playsInline = true;
-
-                        video.src = VIDEO_SEQUENCE[i];
-                        try { video.load(); } catch (e) { }
-
-                        var p0 = video.play();
-                        if (p0 && p0.catch) {
-                            p0.catch(function (err) {
-                                console.log('First play() blocked (index ' + i + '):', err);
-                            });
-                        }
-
-                        firstPlaybackDone = true;
-                    } else {
-                        // 后续播放：继续用你的缓存/容错逻辑（解决卡顿的关键）
-                        await setSrcAndPlay(video, VIDEO_SEQUENCE[i], { allowFallbackToUrl: true });
-                    }
-
-                    // warm next K in background
-                    for (var j = i + 1; j <= i + MEM_AHEAD_K; j++) {
-                        if (j < N_VIDEOS) cachePutAndBlob(VIDEO_SEQUENCE[j]);
+                    var p = video.play();
+                    if (p && p.catch) {
+                        p.catch(function (err) {
+                            console.log('play() 被拦截 (active, index ' + i + '):', err);
+                        });
                     }
                 }
 
@@ -744,15 +555,15 @@
                 var phase = 'start';  // 'start' | 'view' | 'action'
                 var actionStartTime = null;
                 var tTimeoutId = null;     // Tₐ 定时器
-                var firstPlaybackDone = false;
 
                 video.muted = false;
                 video.volume = 1.0;
 
-                async function startVideo(i) {
+                function startVideo(i) {
                     if (i < 0 || i >= N_VIDEOS) return;
                     currentIndex = i;
-                    contentStartTime = null;      // set onplaying
+                    ensureAheadBuffer(i);   // ✅ 新增：后台预取后面 10 条
+                    contentStartTime = null;      // 用 onplaying 记录
                     contentEndTime = null;
                     realViewEndTime = null;
                     currentViewTime = null;
@@ -761,7 +572,7 @@
                     actionStartTime = null;
                     targetDwell = yokedDurations[i];
 
-                    // record start and schedule cutoff at yoked time
+                    // 视频真正开始播放时记录起点
                     video.onplaying = function () {
                         contentStartTime = performance.now();
                         contentEndTime = contentStartTime + targetDwell;
@@ -770,53 +581,31 @@
                         tTimeoutId = setTimeout(function () {
                             phase = 'action';
 
-                            // pause & hide video, show black action screen
+                            // 👉 真实 view 结束时间点（黑屏出现时间）
+                            realViewEndTime = performance.now();
+                            currentViewTime = (contentStartTime !== null)
+                                ? (realViewEndTime - contentStartTime)
+                                : null;
+
+                            // actionRT 的起点 = 真实 view 结束时间
+                            actionStartTime = realViewEndTime;
+
                             try { video.pause(); } catch (e) { }
                             video.style.display = 'none';
                             actionScreen.style.display = 'flex';
-
-                            actionStartTime = performance.now();
                         }, targetDwell);
                     };
 
-                    // stall recovery (install once)
-                    if (!window.__sfv_ps_recovery_installed) {
-                        window.__sfv_ps_recovery_installed = true;
-                        installStallRecovery(
-                            video,
-                            function () { return VIDEO_SEQUENCE[currentIndex]; },
-                            function (n) { jsPsych.data.addDataToLastTrial({ stall_count: n }); }
-                        );
-                    }
-
-                    startScreen.style.display = 'none';
-                    actionScreen.style.display = 'none';
+                    video.src = VIDEO_SEQUENCE[i];
                     video.style.display = 'block';
                     video.currentTime = 0;
+                    actionScreen.style.display = 'none';
 
-                    if (!firstPlaybackDone) {
-                        // 第一次播放：必须“同步触发 play()”，不能被 await 断开
-                        video.preload = 'auto';
-                        video.playsInline = true;
-
-                        video.src = VIDEO_SEQUENCE[i];
-                        try { video.load(); } catch (e) { }
-
-                        var p0 = video.play();
-                        if (p0 && p0.catch) {
-                            p0.catch(function (err) {
-                                console.log('First play() blocked (index ' + i + '):', err);
-                            });
-                        }
-
-                        firstPlaybackDone = true;
-                    } else {
-                        // 后续播放：继续用你的缓存/容错逻辑（解决卡顿的关键）
-                        await setSrcAndPlay(video, VIDEO_SEQUENCE[i], { allowFallbackToUrl: true });
-                    }
-
-                    for (var j = i + 1; j <= i + MEM_AHEAD_K; j++) {
-                        if (j < N_VIDEOS) cachePutAndBlob(VIDEO_SEQUENCE[j]);
+                    var p = video.play();
+                    if (p && p.catch) {
+                        p.catch(function (err) {
+                            console.log('play() 被拦截 (ps, index ' + i + '):', err);
+                        });
                     }
                 }
 
@@ -922,7 +711,7 @@
              style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;">
           <p class="center-text" style="font-size:22px;">
             You will now <b>passively watch</b> a series of videos.<br>
-            After playback starts, please do not swipe or tap. The videos will advance automatically.<br><br><b>Tap anywhere to start playback.</b>
+            Please do not swipe or tap. The videos will advance automatically.
           </p>
         </div>
         <video id="main-video"
@@ -945,25 +734,25 @@
                 var dwellTimes = [];
                 var tTimeoutId = null;
                 var currentTargetDwell = null;
-                var firstPlaybackDone = false;
 
                 video.muted = false;
                 video.volume = 1.0;
 
-                async function startVideo(i) {
+                function startVideo(i) {
                     if (i < 0 || i >= N_VIDEOS) return;
                     currentIndex = i;
-                    contentStartTime = null;   // wait for onplaying
+                    ensureAheadBuffer(i);   // ✅ 新增：后台预取后面 10 条
+                    contentStartTime = null;   // 等 onplaying
                     contentEndTime = null;
                     currentTargetDwell = yokedDurations[i];
 
-                    // start time + auto-advance at yoked dwell time
+                    // 真正开始播放时记录
                     video.onplaying = function () {
                         contentStartTime = performance.now();
 
                         if (tTimeoutId) clearTimeout(tTimeoutId);
                         tTimeoutId = setTimeout(function () {
-                            // use contentStartTime + target dwell to avoid timer jitter
+                            // 结束时间按 contentStartTime + 预设 dwell（避免计入定时器抖动）
                             contentEndTime = (contentStartTime !== null)
                                 ? (contentStartTime + currentTargetDwell)
                                 : performance.now();
@@ -971,45 +760,18 @@
                         }, currentTargetDwell);
                     };
 
-                    // stall recovery (install once)
-                    if (!window.__sfv_pn_recovery_installed) {
-                        window.__sfv_pn_recovery_installed = true;
-                        installStallRecovery(
-                            video,
-                            function () { return VIDEO_SEQUENCE[currentIndex]; },
-                            function (n) { jsPsych.data.addDataToLastTrial({ stall_count: n }); }
-                        );
-                    }
-
-                    startScreen.style.display = 'none';
+                    video.src = VIDEO_SEQUENCE[i];
                     video.style.display = 'block';
                     video.currentTime = 0;
 
-                    if (!firstPlaybackDone) {
-                        // 第一次播放：必须“同步触发 play()”，不能被 await 断开
-                        video.preload = 'auto';
-                        video.playsInline = true;
-
-                        video.src = VIDEO_SEQUENCE[i];
-                        try { video.load(); } catch (e) { }
-
-                        var p0 = video.play();
-                        if (p0 && p0.catch) {
-                            p0.catch(function (err) {
-                                console.log('First play() blocked (index ' + i + '):', err);
-                            });
-                        }
-
-                        firstPlaybackDone = true;
-                    } else {
-                        // 后续播放：继续用你的缓存/容错逻辑（解决卡顿的关键）
-                        await setSrcAndPlay(video, VIDEO_SEQUENCE[i], { allowFallbackToUrl: true });
-                    }
-
-                    for (var j = i + 1; j <= i + MEM_AHEAD_K; j++) {
-                        if (j < N_VIDEOS) cachePutAndBlob(VIDEO_SEQUENCE[j]);
+                    var p = video.play();
+                    if (p && p.catch) {
+                        p.catch(function (err) {
+                            console.log('play() 被拦截 (pn, index ' + i + '):', err);
+                        });
                     }
                 }
+
 
                 function goToNextVideoAuto() {
                     var now = performance.now();
@@ -1056,16 +818,10 @@
 
                 // 不安装 swipe handler，完全忽略上滑
                 // 只在 start-screen 后自动开始
-                // Start only after participant tap (required to unlock autoplay on mobile)
-                var __pn_started = false;
-                function __pn_tapToStart() {
-                    if (__pn_started) return;
-                    __pn_started = true;
-                    document.removeEventListener('click', __pn_tapToStart);
+                setTimeout(function () {
+                    startScreen.style.display = 'none';
                     startVideo(0);
-                }
-                document.addEventListener('click', __pn_tapToStart);
-
+                }, 1000); // 1 秒后开始，也可以改成点击触发
 
                 video.onended = function () {
                     // 理论上不会依赖 onended，而是用 Tₐ；这里可以仅做日志
